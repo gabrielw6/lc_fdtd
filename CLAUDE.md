@@ -69,9 +69,10 @@ then the code. Never let them silently drift.
 
 | Module | Package | Depends on | Status |
 |---|---|---|---|
-| 0 Conventions | `conventions` | — | specced |
-| 1 Mesh interface (geometry) | `mesh.interface` | external mesh module | specced |
-| 2 Material model | `material.*` | mesh | not specced |
+| — Conventions | `conventions` | — | specced |
+| 0 Geometry builder | `geometry.builder` | external mesh module | specced |
+| 1 Mesh interface (geometry) | `mesh.interface` | Module 0's output | specced |
+| 2 Material model | `material.*` | mesh | specced |
 | 3 FEM assembly | `fem.*` | mesh, material | not specced |
 | 4 Ports | `ports.*` | mesh, material | not specced |
 | 5 PML | `pml.*` | material | not specced |
@@ -79,8 +80,14 @@ then the code. Never let them silently drift.
 | 7 S-parameter extraction | `extract.*` | ports, solve | not specced |
 | 8 Validation | `validation.*` | all | not specced |
 
-Mesh **generation** is external (existing package) and consumed read-only through
-`mesh.interface`. This repo owns the geometry adapter, not the mesher.
+Mesh **generation** (the meshing algorithm itself) is external (existing package). Module 0
+builds and tags the one fixed topology (microstrip + centered LC cutout) from a handful of
+dimension parameters and invokes that external mesher; Module 1 then consumes the tagged
+mesh read-only. Module 0 also introduces two boundary tags beyond Module 1's original list —
+`PML_OUTER_PEC` and `PMC_SIDE` (the latter is a *deliberate* natural/PMC truncation on the
+lateral faces, explicitly tagged so Module 1's "every boundary face must resolve to a tag"
+coverage check stays meaningful rather than flagging it as an omission). See
+`docs/module0_geometry_builder_equations.md`.
 
 ## 5. Global conventions (inherited by every module — never redefine locally)
 
