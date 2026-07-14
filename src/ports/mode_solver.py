@@ -642,3 +642,24 @@ def biorthogonality(mode_m: PortMode, mode_n: PortMode) -> complex:
     normalized the same way `project` is so the diagonal is ~1 (not ~2)
     for a lossless mode."""
     return project(mode_m.e_t, mode_n)
+
+
+def mode_similarity(candidate: PortMode, reference: PortMode) -> float:
+    """docs/module6_solve_sweep_equations.md Section 6.2's boxed
+    frequency-to-frequency tracking overlap -- a *symmetric*-normalized
+    similarity score, distinct from `project`'s asymmetric (target-only)
+    normalization:
+
+        overlap(c, m) = |raw(e_c, h_m)| / (sqrt(self(c)) * sqrt(self(m)))
+
+    `candidate`/`reference` are `PortMode`s from two *different*
+    eigenproblems (different omega, typically consecutive frequency
+    steps); this is not bounded by 1 the way same-frequency
+    biorthogonality is, but stays close to 1 for a genuine continuation
+    and drops sharply at a crossing/mismatch (Section 6.2), which is what
+    makes it useful for tracking. Reuses `_raw_overlap`/`_self_overlap`
+    directly -- no fresh quadrature."""
+    denom = np.sqrt(abs(_self_overlap(candidate))) * np.sqrt(abs(_self_overlap(reference)))
+    if denom == 0:
+        return 0.0
+    return float(abs(_raw_overlap(candidate.e_t, reference)) / denom)

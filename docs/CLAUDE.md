@@ -75,8 +75,8 @@ then the code. Never let them silently drift.
 | 2 Material model | `material.*` | mesh | specced |
 | 3 FEM assembly | `fem.*` | mesh, material | specced |
 | 4 Ports | `ports.*` | mesh, material | implemented, verified (see note below) |
-| 5 PML | `pml.*` | material | specced |
-| 6 Solve / sweep | `solve.*` | fem, ports, pml | specced |
+| 5 PML | `pml.*` | material | implemented, verified |
+| 6 Solve / sweep | `solve.*` | fem, ports, pml | implemented, verified (see note below) |
 | 7 S-parameter extraction | `extract.*` | ports, solve | not specced |
 | 8 Validation | `validation.*` | all | not specced |
 
@@ -102,16 +102,31 @@ makes it matched, not a sign error). Already applied to `module2_material_equati
 "fix" `PMLMaterial`'s sign to satisfy the generic check; validate PML correctness via the
 reflection-coefficient test in Module 5 §5.1 instead.
 
-**Carry-forward from Module 4's implementation, addressed in Module 6**: `ports.mode_solver`'s
-mode selection (`module4_ports_equations.md` §3.7) had a known limitation — plain
-$\beta$-sorting can occasionally select a spurious "box mode" of the PMC-walled port enclosure
-instead of the physical quasi-TEM mode. `module6_solve_sweep_equations.md` §6 implements the
-principled fix flagged there: frequency-to-frequency mode tracking via field-overlap
-correlation, seeded by a starting-frequency precondition check (§6.1) where box modes are still
-evanescent. This introduces the one genuinely stateful element in the whole sweep (`TrackingState`,
-§6.4) — everything else per frequency is independent. Validate this specifically against the
-synthetic near-degenerate test case Module 6 §8 step 5 calls for before trusting it on the real
-geometry.
+**Carry-forward from Module 4's implementation, addressed in Module 6 (now implemented)**:
+`ports.mode_solver`'s mode selection (`module4_ports_equations.md` §3.7) had a known
+limitation — plain $\beta$-sorting can occasionally select a spurious "box mode" of the
+PMC-walled port enclosure instead of the physical quasi-TEM mode. `solve.sweep.track_modes`
+implements the principled fix `module6_solve_sweep_equations.md` §6 flags: frequency-to-
+frequency mode tracking via field-overlap correlation (`ports.mode_solver.mode_similarity`,
+a small addition to Module 4's public surface beyond its own doc — the symmetric-normalized
+overlap §6.2 specifies, distinct from `project`'s asymmetric normalization), seeded by a
+starting-frequency precondition check (`solve.sweep.check_starting_frequency_precondition`,
+§6.1) where box modes are still evanescent. This introduces the one genuinely stateful element
+in the whole sweep (`TrackingState`, §6.4) — everything else per frequency is independent.
+`track_modes` takes an `n_modes` parameter beyond §10's minimal listed signature (needed to
+size the first-step selection from the oversupplied candidate pool; there is no previous
+`TrackingState` to size against at that point) — the same kind of small, documented contract
+extension this repo has applied before (e.g. Module 1's additions for Module 3). Verified
+against the synthetic near-degenerate test case §8 step 5 calls for
+(`test/test_solve/test_mode_tracking.py`) before trusting it on the real geometry.
+
+**Carry-forward from Module 6's implementation**: the assembled system's complex-symmetry
+check (`solve.system.factor`, §5.1) is deliberately **not** machine-precision-tight
+(`_SYMMETRY_TOL=1e-2`, not `1e-9`) — `K_int`/`M_int` (Module 3) are exactly symmetric, but
+`B_p` (Module 4 §5.1) carries its own unresolved honesty flag about exact symmetry, and a tight
+check would fail every port-driven sweep on that already-known open item rather than on an
+actual new bug. Do not tighten this tolerance to "fix" an apparent symmetry failure without
+first checking whether Module 4's §3.6/§5.1 sign questions are the real cause.
 
 ## 5. Global conventions (inherited by every module — never redefine locally)
 
