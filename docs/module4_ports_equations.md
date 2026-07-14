@@ -193,27 +193,45 @@ Note the exact algebraic relation $S_{tz} = -T_{zt}^{T}$ (both are the same inte
 which index is on $\mathbf N$ vs. $\nabla_tL$ — a useful **runtime consistency check**,
 independent of the eigenproblem arrangement question below.
 
-### 3.6 The generalized eigenvalue problem — derived result, with an explicit honesty flag
+### 3.6 The generalized eigenvalue problem
 
-Substituting $\tilde e_x=\gamma e_x$ into both weak forms and collecting terms gives a
-well-defined generalized eigenvalue problem in $\gamma^2$:
+**Correction (post-implementation review): the block below originally had the wrong sign on the
+bottom-left block, caught by re-deriving §3.4's weak form directly rather than trusting the
+original bookkeeping — exactly the cross-check this section's honesty flag asked for.**
+Substituting $\tilde e_x=\gamma e_x$ into §3.3's transverse weak form reproduces
+$S_{tt}\mathbf e_t + S_{tz}\tilde e_x = \gamma^2 T_{tt}\mathbf e_t$ as stated below (that row is
+correct and was never in question). But testing §3.4's axial PDE with $L_i$ and integrating the
+divergence term by parts gives
+$-\big(S_{zz}e_x\big)_i - \gamma\big(T_{zt}\mathbf e_t\big)_i = 0$, i.e.
+$S_{zz}e_x = -\gamma T_{zt}\mathbf e_t$; substituting $e_x=\tilde e_x/\gamma$ gives
+$S_{zz}\tilde e_x = -\gamma^2 T_{zt}\mathbf e_t$ — a **minus** sign on $T_{zt}$, not the plus
+sign originally boxed here. The corrected, well-defined generalized eigenvalue problem in
+$\gamma^2$ is:
 
-$$\begin{bmatrix}S_{tt} & S_{tz}\\ 0 & S_{zz}\end{bmatrix}\begin{Bmatrix}\mathbf e_t\\ \tilde e_x\end{Bmatrix} = \gamma^2\begin{bmatrix}T_{tt} & 0\\ T_{zt} & 0\end{bmatrix}\begin{Bmatrix}\mathbf e_t\\ \tilde e_x\end{Bmatrix}$$
+$$\begin{bmatrix}S_{tt} & S_{tz}\\ 0 & S_{zz}\end{bmatrix}\begin{Bmatrix}\mathbf e_t\\ \tilde e_x\end{Bmatrix} = \gamma^2\begin{bmatrix}T_{tt} & 0\\ -T_{zt} & 0\end{bmatrix}\begin{Bmatrix}\mathbf e_t\\ \tilde e_x\end{Bmatrix}$$
 
-**This is derived correctly from §3.3–3.4** (every step verified), but the raw block
-arrangement above is **not manifestly symmetric** — several equivalent conventions exist in the
-literature (Jin, *The Finite Element Method in Electromagnetics*, Ch. 4; Lee, Sun & Cendes,
-1991) for testing/scaling the axial equation that produce a symmetric-definite pencil instead,
-and getting the sign/scaling choice exactly right without a reference to check against is easy
-to get subtly wrong. **Implementation guidance**: cross-check the exact final block arrangement
-against one such reference during implementation, rather than trusting this document's specific
-arrangement as the single correct bookkeeping. Regardless of which equivalent arrangement is
-used, the physics forces two things that serve as the real correctness criteria (§8): $\gamma^2$
-must come out **real** for a lossless ($\varepsilon_r$ real) cross-section, and the dominant
-mode's $\beta=\mathrm{Im}(\gamma)$ must match the analytic microstrip formulas (Hammerstad–
-Jensen/Wheeler) at low frequency. Use a general (non-symmetric-pencil-capable) eigensolver (e.g.
-QZ) regardless, since it handles both the symmetric and non-symmetric arrangements correctly —
-there's no need to force symmetry algebraically if a general solver is used throughout.
+**Confirmed by an independent numerical experiment**: on a homogeneous PEC-walled rectangular
+waveguide (closed-form TE/TM spectrum available), the original (+$T_{zt}$) arrangement produces
+the correct TE spectrum (TE modes have $e_x\equiv0$, so they never exercise this block and can't
+catch a sign error in it) but a broken TM spectrum — a spurious near-degenerate cluster instead
+of the discrete TM11/TM21 modes, with the true TM21 missing entirely. The corrected
+($-T_{zt}$) arrangement gives clean, mesh-convergent TM11/TM21 eigenvalues matching the
+analytic values. This is a strictly stronger check than "$\gamma^2$ real for lossless" (§8) —
+**both signs give real $\gamma^2$**, since realness follows from a more basic structural
+property, not from this specific block's sign. The Hammerstad–Jensen $\beta(\omega)$ gate this
+section always intended as the real acceptance test (below) is what actually distinguishes them,
+and is the check that should have caught this before the honesty flag below was ever needed.
+
+The remaining literature-cross-check caveat is now resolved by the above, not merely deferred: no
+further sign/scaling ambiguity is open here. Regardless, the physics still forces two things that
+serve as correctness criteria (§8): $\gamma^2$ must come out **real** for a lossless
+($\varepsilon_r$ real) cross-section, and the dominant mode's $\beta=\mathrm{Im}(\gamma)$ must
+match the analytic microstrip formulas (Hammerstad–Jensen/Wheeler) at low frequency — the second
+of these is what actually caught the sign error above and should be run as a matter of course,
+not treated as optional. Use a general (non-symmetric-pencil-capable) eigensolver (e.g. QZ)
+regardless of arrangement, since it handles both the symmetric and non-symmetric cases
+correctly — there's no need to force symmetry algebraically if a general solver is used
+throughout.
 
 **Confirmed by implementation: this discretization admits spurious eigenvalue solutions**, as
 the honesty flag above anticipated. A **physical-bounds filter is required, not optional**:
@@ -244,6 +262,16 @@ of the physical mode. A field-pattern discriminator (concentration of $|\mathbf 
 trace) was tried and did not generalize across mesh resolutions — it is not included here, since
 a heuristic that helps at one resolution and hurts at another is worse than no heuristic, not
 better. This is left as a documented limitation rather than a false fix.
+
+**Update, post-review**: §3.6's block-arrangement sign bug (since fixed) was a plausible
+contributor to this limitation, and fixing it does measurably help — a resolution that previously
+selected a box mode as dominant now selects the correct quasi-TEM mode. It does **not** eliminate
+the limitation, though: other resolutions still select a box mode, or a marginally-converged
+near-degenerate candidate in a non-dominant slot. A second mitigation attempt (an admittance-phase
+threshold, $\mathrm{Re}(Y_m)/|Y_m|$, to reject reactive-dominated non-dominant candidates before
+normalization) hit the same "helps here, breaks there" pattern as the field-pattern discriminator
+above and was likewise reverted rather than kept as a false fix. The dominant mode remains
+reliable; non-dominant retained modes are not guaranteed clean.
 
 **Principled path forward, deferred to Module 6**: the standard resolution for this exact
 problem (used in mode-tracking waveguide-port solvers generally) is **continuity across the

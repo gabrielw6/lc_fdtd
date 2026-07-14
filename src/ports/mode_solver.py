@@ -9,12 +9,16 @@ LC-driven composite quadrature, a single verified order-2 rule
 (`mesh_interface.quadrature.tri_rule`) is already exact here; there is no
 adaptive escalation to build.
 
-Section 3.6's honesty flag applies throughout this file: the block
-arrangement below is the doc's own derived-but-uncross-checked convention.
-A general (QZ-capable) dense eigensolver is used specifically because the
-doc calls this out as robust to either the symmetric or non-symmetric
-arrangement -- `scipy.linalg.eig` on two dense matrices dispatches to
-LAPACK's `ggev`/`cggev` (QZ).
+Section 3.6's block arrangement was corrected post-implementation: the
+originally-boxed `+T_zt` bottom-left block was wrong (re-deriving Section
+3.4's axial weak form directly gives `S_zz*tilde_e_x = -gamma^2*T_zt*e_t`,
+a minus sign) -- confirmed both by the re-derivation and by an independent
+rectangular-waveguide TM-spectrum experiment (see the doc's Section 3.6
+for the full writeup). `Bmat`'s bottom-left block below is `-T_zt`,
+matching the corrected doc. A general (QZ-capable) dense eigensolver is
+used regardless, since it handles both symmetric and non-symmetric pencil
+arrangements correctly -- `scipy.linalg.eig` on two dense matrices
+dispatches to LAPACK's `ggev`/`cggev` (QZ).
 """
 from __future__ import annotations
 
@@ -381,10 +385,13 @@ def _eps_r_bounds(cs: PortCrossSection, materials: MaterialAssembly) -> tuple[fl
     bound on any genuinely propagating bound mode's beta: `k0*sqrt(eps_min)
     <= beta <= k0*sqrt(eps_max)` (an "effective index" between the two
     media's indices; a Sturm-Liouville-type eigenvalue bound). Used only to
-    flag spurious discrete eigenvalues (Section 3.6's honesty flag: an
-    uncross-checked block arrangement can admit extra, non-physical
-    solutions alongside the real ones), sampled at triangle centroids since
-    Section 1 guarantees each triangle's tag is spatially homogeneous."""
+    flag spurious discrete eigenvalues -- a singular-B generalized
+    eigenproblem (Section 3.6: the e_x-e_x block is zero) can admit extra,
+    non-physical solutions from the discrete pencil alongside the real
+    ones regardless of the block arrangement's sign being correct (Section
+    3.6's own sign bug, since fixed, was a separate issue from this) --
+    sampled at triangle centroids since Section 1 guarantees each
+    triangle's tag is spatially homogeneous."""
     lo, hi = np.inf, -np.inf
     for t in range(cs.n_triangles):
         centroid = cs.yz[cs.triangles[t]].mean(axis=0, keepdims=True)
@@ -416,17 +423,34 @@ def _is_spurious_propagating_mode(gamma: complex, k0: float, beta_lo: float, bet
 # microstrip mode's. Empirically (varying `target_elements_per_wavelength`
 # on the reference geometry): at some mesh resolutions the top-beta mode
 # is one of these box modes, not the quasi-TEM mode, and which one wins is
-# sensitive to discretization noise breaking the near-degeneracy. A
-# trace-energy-concentration heuristic was tried to break the tie and
-# rejected -- it measured energy within a fixed window around the trace
-# rather than the field's decay *rate* away from it (the real physical
-# signature separating quasi-TEM fringing fields from box-mode humps),
-# and a box mode whose smooth lobe happens to peak near the trace's
-# (roughly centered) position scored just as well, in one case actively
-# demoting the correct mode that plain beta-sort had already found. Left
-# as plain Section 3.7 beta-sort; a physically-motivated (decay-rate or
-# projection-onto-a-known-quasi-TEM-ansatz) discriminator is future work,
-# not something to guess further here.
+# sensitive to discretization noise breaking the near-degeneracy.
+#
+# This is a *separate* issue from Section 3.6's block-sign bug (since
+# fixed -- see that section's derivation and the rectangular-waveguide
+# cross-check in the doc). The sign fix measurably helps (confirmed: a
+# resolution that previously selected a box mode now selects the correct
+# quasi-TEM mode) but does not eliminate the limitation -- other
+# resolutions still select a box mode or a marginally-converged
+# near-degenerate candidate for non-dominant slots. Two mitigations were
+# tried and rejected as further ad hoc guessing rather than principled
+# fixes: (1) a trace-energy-concentration heuristic for the dominant slot
+# -- it measured energy within a fixed window around the trace rather than
+# the field's decay *rate* away from it (the real physical signature
+# separating quasi-TEM fringing fields from box-mode humps), and a box
+# mode whose smooth lobe happens to peak near the trace's (roughly
+# centered) position scored just as well, in one case actively demoting
+# the correct mode plain beta-sort had already found; (2) a Re(Y_m)/|Y_m|
+# admittance-phase threshold to reject reactive-dominated non-dominant
+# candidates before normalization -- tightening it enough to reject one
+# marginal candidate broke a different port's ability to find any second
+# mode at all, the same threshold-whack-a-mole pattern as (1).
+#
+# Left as plain Section 3.7 beta-sort. The dominant mode (`modes[0]`) is
+# reliable (see `test_dominant_gamma_squared_is_real_for_lossless_material`);
+# non-dominant retained modes are not guaranteed clean and downstream code
+# should not assume they are. A physically-motivated (decay-rate or
+# projection-onto-a-known-quasi-TEM-ansatz) discriminator, or tightening
+# the mesh specifically at the port cross-section, is future work.
 
 
 # ============================================================================
@@ -474,7 +498,7 @@ class PortModeSolver:
         A[:ne, ne:] = S_tz[np.ix_(free_e, free_v)]
         A[ne:, ne:] = S_zz[np.ix_(free_v, free_v)]
         Bmat[:ne, :ne] = T_tt[np.ix_(free_e, free_e)]
-        Bmat[ne:, :ne] = T_zt[np.ix_(free_v, free_e)]
+        Bmat[ne:, :ne] = -T_zt[np.ix_(free_v, free_e)]
 
         gamma_sq, vecs = sla.eig(A, Bmat)
         finite = np.isfinite(gamma_sq) & (np.abs(gamma_sq) < _GAMMA_SQ_MAGNITUDE_CEILING)
@@ -489,10 +513,11 @@ class PortModeSolver:
         gamma_all = np.sqrt(gamma_sq)  # principal branch: Re>=0, Im>0 when purely imaginary (Section 3.7)
 
         # Discard spurious discrete solutions before ranking (see
-        # `_is_spurious_propagating_mode`'s docstring): Section 3.6's
-        # uncross-checked block arrangement can admit non-physical
-        # eigenpairs alongside the real spectrum, and naive "top n_modes by
-        # beta" selection is not safe without this filter.
+        # `_is_spurious_propagating_mode`'s docstring): the singular-B
+        # generalized eigenproblem (Section 3.6) can admit non-physical
+        # eigenpairs alongside the real spectrum regardless of block-sign
+        # correctness, and naive "top n_modes by beta" selection is not
+        # safe without this filter.
         k0 = omega * np.sqrt(_c.mu_0 * _c.epsilon_0)
         eps_lo, eps_hi = _eps_r_bounds(cs, self._materials)
         beta_lo, beta_hi = k0 * np.sqrt(max(eps_lo, 0.0)), k0 * np.sqrt(max(eps_hi, 0.0))
