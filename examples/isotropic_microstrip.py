@@ -7,7 +7,13 @@ if invoked from a shell as:
     python src/cli.py --w 0.002 --L 0.020 --L-lc 0.008 --W-lc 0.004 \\
         --h-sub 0.002 --W-sub 0.010 --eps-r-substrate 3.0 \\
         --mesh-density 6 --pml-r0 1.0 --pml-kappa-max 1.0 \\
-        --f-start 25e9 --f-points 1 --n-modes 2 --plot
+        --f-start 25e9 --f-points 1 --n-modes 2 --plot --show-geometry
+
+`--show-geometry` opens `visualization.geometry_view.plot_geometry`'s 3D
+view (ports, PEC line, substrate envelope; PMC deliberately omitted) right
+after meshing -- a quick sanity check that the geometry parameters above
+produced what you expect, independent of whether the sweep itself
+succeeds.
 
 This script exists so "run the isotropic example" is a single command
 (`python examples/isotropic_microstrip.py`) rather than requiring the
@@ -69,6 +75,7 @@ if __name__ == "__main__":
                 "--n-modes", "2",
                 "--lc", "none",
                 "--plot",
+                "--show-geometry",
             ]
         )
     )

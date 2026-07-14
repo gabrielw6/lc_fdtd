@@ -252,3 +252,67 @@ def test_main_with_plot_output_writes_both_csv_and_plot(tmp_path, capsys):
     assert plot_path.exists()
     out = capsys.readouterr().out
     assert out.strip().split("\n")[0].startswith("frequency_Hz")
+
+
+# --- geometry/mesh visualization ---
+
+
+def test_parser_accepts_geometry_and_mesh_visualization_flags():
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        _REQUIRED_GEOM_ARGS
+        + ["--show-geometry", "--geometry-output", "geo.png", "--show-mesh", "--mesh-output", "mesh.png", "--geometry-only"]
+    )
+    assert args.show_geometry is True
+    assert str(args.geometry_output) == "geo.png"
+    assert args.show_mesh is True
+    assert str(args.mesh_output) == "mesh.png"
+    assert args.geometry_only is True
+
+
+def test_parser_geometry_and_mesh_visualization_defaults_are_off():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS)
+    assert args.show_geometry is False
+    assert args.geometry_output is None
+    assert args.show_mesh is False
+    assert args.mesh_output is None
+    assert args.geometry_only is False
+
+
+def test_main_geometry_only_writes_plots_and_skips_the_sweep(tmp_path, capsys):
+    pytest.importorskip("gmsh")
+    geometry_path = tmp_path / "geometry.png"
+    mesh_path = tmp_path / "mesh.png"
+    exit_code = main(
+        [
+            "--w", "0.002", "--L", "0.020", "--L-lc", "0.008", "--W-lc", "0.004",
+            "--h-sub", "0.002", "--W-sub", "0.010", "--eps-r-substrate", "3.0",
+            "--mesh-density", "6", "--f-start", "25e9", "--quiet",
+            "--geometry-output", str(geometry_path), "--mesh-output", str(mesh_path),
+            "--geometry-only",
+        ]
+    )
+    assert exit_code == 0
+    assert geometry_path.exists() and geometry_path.stat().st_size > 0
+    assert mesh_path.exists() and mesh_path.stat().st_size > 0
+    # --geometry-only must return before the sweep/CSV-formatting stage.
+    assert "frequency_Hz" not in capsys.readouterr().out
+
+
+def test_main_show_geometry_alongside_a_full_sweep_still_writes_csv(tmp_path, capsys):
+    pytest.importorskip("gmsh")
+    geometry_path = tmp_path / "geometry.png"
+    exit_code = main(
+        [
+            "--w", "0.002", "--L", "0.020", "--L-lc", "0.008", "--W-lc", "0.004",
+            "--h-sub", "0.002", "--W-sub", "0.010", "--eps-r-substrate", "3.0",
+            "--mesh-density", "6", "--pml-r0", "1.0", "--pml-kappa-max", "1.0",
+            "--f-start", "25e9", "--f-points", "1", "--n-modes", "2",
+            "--lc", "none", "--quiet", "--geometry-output", str(geometry_path),
+        ]
+    )
+    assert exit_code == 0
+    assert geometry_path.exists() and geometry_path.stat().st_size > 0
+    out = capsys.readouterr().out
+    assert out.strip().split("\n")[0].startswith("frequency_Hz")

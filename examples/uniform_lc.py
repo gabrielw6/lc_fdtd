@@ -30,6 +30,12 @@ A single frequency point, deliberately -- see examples/isotropic_microstrip.py's
 docstring for why a multi-point sweep was tried and reverted on this coarse
 test geometry (a Module 4/6 box-mode/mode-tracking limitation, not a
 plotting issue). `--plot` still renders the single point as a marker.
+
+`--show-mesh` opens `visualization.geometry_view.plot_mesh`'s 3D wireframe
+of the tetrahedral mesh itself (the exact global edge list the edge-element
+solver assembles on) right after meshing -- see
+examples/isotropic_microstrip.py for the geometry-envelope view instead
+(`--show-geometry`).
 """
 import sys
 from pathlib import Path
@@ -60,6 +66,7 @@ if __name__ == "__main__":
                 "--eps-perp", "2.5",
                 "--eps-parallel", "3.0",
                 "--plot",
+                "--show-mesh",
             ]
         )
     )

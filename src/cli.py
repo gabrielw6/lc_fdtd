@@ -40,17 +40,12 @@ from mesh_interface.interface import MeshGeometryError  # noqa: E402
 from ports import CrossSectionError, PortModeError  # noqa: E402
 from solve import ModeTrackingError, SolveSingularityError, SweepPreconditionError, SystemSymmetryError  # noqa: E402
 from solve import run_sweep  # noqa: E402
+from visualization import PlottingUnavailableError, plot_geometry, plot_mesh  # noqa: E402
 
 class CLIError(RuntimeError):
     """Raised for a bad CLI invocation (argument combination this parser's
     own type-checking can't express) -- caught in `main`, reported as a
     clean one-line error rather than a traceback."""
-
-
-class PlottingUnavailableError(RuntimeError):
-    """Raised when --plot/--plot-output is requested but matplotlib isn't
-    installed -- caught in `main` and reported as a clean one-line error
-    (with the install command), not a raw ImportError traceback."""
 
 
 # Domain errors every pipeline stage can raise for an ill-posed (not
@@ -139,6 +134,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     lc.add_argument("--lc-director-file", type=Path, default=None, help="director field file path for --lc file")
     lc.add_argument("--eps-perp", type=float, default=None, help="LC ordinary relative permittivity (required if --lc != none)")
     lc.add_argument("--eps-parallel", type=float, default=None, help="LC extraordinary relative permittivity (required if --lc != none)")
+
+    viz = p.add_argument_group("geometry/mesh visualization (visualization.geometry_view)")
+    viz.add_argument(
+        "--show-geometry", action="store_true",
+        help="display a 3D plot of the tagged geometry (ports, PEC line, substrate; not PMC) after meshing",
+    )
+    viz.add_argument("--geometry-output", type=Path, default=None, help="save the geometry plot to this path")
+    viz.add_argument(
+        "--show-mesh", action="store_true",
+        help="display a 3D plot of the tetrahedral mesh itself after meshing",
+    )
+    viz.add_argument("--mesh-output", type=Path, default=None, help="save the mesh plot to this path")
+    viz.add_argument(
+        "--geometry-only", action="store_true",
+        help="build the geometry/mesh, run any requested --show-geometry/--show-mesh plots, then exit "
+        "without running the frequency sweep",
+    )
 
     out = p.add_argument_group("output")
     out.add_argument("--output", type=Path, default=None, help="CSV output path (default: print to stdout)")
@@ -330,6 +342,20 @@ def main(argv: list[str] | None = None) -> int:
         mesh_handle, material_stub = GeometryBuilder().build(params)
         mesh = MeshInterface.from_mesh_handle(mesh_handle)
         log(f"  {mesh.n_tets} tets, {mesh.n_edges} edges ({time.time() - t0:.1f}s)")
+
+        if args.show_geometry or args.geometry_output is not None:
+            log("Plotting geometry...")
+            plot_geometry(mesh, show=args.show_geometry, output=args.geometry_output)
+            if args.geometry_output is not None:
+                log(f"  wrote {args.geometry_output}")
+        if args.show_mesh or args.mesh_output is not None:
+            log("Plotting mesh...")
+            plot_mesh(mesh, show=args.show_mesh, output=args.mesh_output)
+            if args.mesh_output is not None:
+                log(f"  wrote {args.mesh_output}")
+
+        if args.geometry_only:
+            return 0
 
         base_assembly = load_material_spec(geometry_stub=material_stub)
         tag_to_model = dict(base_assembly._tag_to_model)
