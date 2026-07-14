@@ -240,6 +240,16 @@ def _make_e_t(cs: PortCrossSection, e_edge_dofs: np.ndarray) -> Callable[[np.nda
     return e_t
 
 
+def field_from_edge_dofs(cs: PortCrossSection, e_edge_dofs: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
+    """Public wrapper around the same per-triangle Whitney reconstruction
+    `PortMode.e_t` uses (Section 3.8) -- for building a transverse field
+    callable from an arbitrary edge-DOF vector over this cross-section,
+    not necessarily a solved eigenmode. `docs/module7_extract_sparameters_equations.md`
+    Section 2 uses this to build `E_t^(p)` from a driven solve's global
+    solution vector, restricted to one port's own edges."""
+    return _make_e_t(cs, e_edge_dofs)
+
+
 def _make_h_t(
     cs: PortCrossSection, e_edge_dofs: np.ndarray, ex_tilde_dofs: np.ndarray, gamma: complex, omega: float
 ) -> Callable[[np.ndarray], np.ndarray]:

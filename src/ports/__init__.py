@@ -7,7 +7,15 @@ restricted to 2D port-face points). Never imports `fem`, `geometry_builder`,
 or `meshing`.
 """
 from .cross_section import CrossSectionError, PortCrossSection, extract_cross_section
-from .mode_solver import PortMode, PortModeError, PortModeSolver, biorthogonality, mode_similarity, project
+from .mode_solver import (
+    PortMode,
+    PortModeError,
+    PortModeSolver,
+    biorthogonality,
+    field_from_edge_dofs,
+    mode_similarity,
+    project,
+)
 from .port_operator import PortOperatorError, build_B, build_g, deembed
 
 __all__ = [
@@ -15,6 +23,7 @@ __all__ = [
     "PortMode",
     "PortModeError",
     "project",
+    "field_from_edge_dofs",
     "biorthogonality",
     "mode_similarity",
     "build_B",

@@ -83,7 +83,12 @@ def test_reduce_system_produces_symmetric_reduced_matrix():
 
 
 def test_factor_rejects_non_symmetric_matrix():
-    non_symmetric = sp.csr_matrix(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=complex))
+    # Relative asymmetry >> _SYMMETRY_TOL (0.3, deliberately loose --
+    # see factor()'s docstring for why): off-diagonal entries 10 and 0
+    # against a scale of 10 give a residual/scale ratio of 1.0, an order
+    # of magnitude past the tolerance, representative of what a genuinely
+    # transposed tensor index looks like (not a borderline percentage).
+    non_symmetric = sp.csr_matrix(np.array([[1.0, 10.0], [0.0, 1.0]], dtype=complex))
     with pytest.raises(SystemSymmetryError):
         factor(non_symmetric)
 

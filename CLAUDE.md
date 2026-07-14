@@ -76,9 +76,9 @@ then the code. Never let them silently drift.
 | 3 FEM assembly | `fem.*` | mesh, material | specced |
 | 4 Ports | `ports.*` | mesh, material | implemented, verified (see note below) |
 | 5 PML | `pml.*` | material | specced |
-| 6 Solve / sweep | `solve.*` | fem, ports, pml | not specced |
-| 7 S-parameter extraction | `extract.*` | ports, solve | not specced |
-| 8 Validation | `validation.*` | all | not specced |
+| 6 Solve / sweep | `solve.*` | fem, ports, pml | specced |
+| 7 S-parameter extraction | `extract.*` | ports, solve | specced |
+| 8 Validation | `validation.*` | all | specced |
 
 Mesh **generation** (the meshing algorithm itself) is external (existing package). Module 0
 builds and tags the one fixed topology (microstrip + centered LC cutout) from a handful of
@@ -102,17 +102,16 @@ makes it matched, not a sign error). Already applied to `module2_material_equati
 "fix" `PMLMaterial`'s sign to satisfy the generic check; validate PML correctness via the
 reflection-coefficient test in Module 5 §5.1 instead.
 
-**Carry-forward from Module 4's implementation, blocking on Module 6**: `ports.mode_solver`'s
-mode selection (`module4_ports_equations.md` §3.7) has a known, currently-unresolved limitation
-— plain $\beta$-sorting can occasionally select a spurious "box mode" of the PMC-walled port
-enclosure instead of the physical quasi-TEM mode, since the two can have close $\beta$ at some
-frequencies/mesh resolutions. A per-frequency field-pattern heuristic was tried and rejected
-(didn't generalize across mesh resolutions). The principled fix — tracking mode continuity
-across consecutive frequency points via field-overlap correlation, seeded by a low starting
-frequency where box modes are still evanescent — requires Module 6's sweep driver to exist,
-since it inherently compares across frequency points. **When Module 6 is specced, this is a
-required piece of its design, not an optional refinement** — do not treat Module 4 as fully
-closed out until this is addressed there.
+**Carry-forward from Module 4's implementation, addressed in Module 6**: `ports.mode_solver`'s
+mode selection (`module4_ports_equations.md` §3.7) had a known limitation — plain
+$\beta$-sorting can occasionally select a spurious "box mode" of the PMC-walled port enclosure
+instead of the physical quasi-TEM mode. `module6_solve_sweep_equations.md` §6 implements the
+principled fix flagged there: frequency-to-frequency mode tracking via field-overlap
+correlation, seeded by a starting-frequency precondition check (§6.1) where box modes are still
+evanescent. This introduces the one genuinely stateful element in the whole sweep (`TrackingState`,
+§6.4) — everything else per frequency is independent. Validate this specifically against the
+synthetic near-degenerate test case Module 6 §8 step 5 calls for before trusting it on the real
+geometry.
 
 ## 5. Global conventions (inherited by every module — never redefine locally)
 
