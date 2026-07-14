@@ -73,8 +73,8 @@ then the code. Never let them silently drift.
 | 0 Geometry builder | `geometry.builder` | external mesh module | specced |
 | 1 Mesh interface (geometry) | `mesh.interface` | Module 0's output | specced |
 | 2 Material model | `material.*` | mesh | specced |
-| 3 FEM assembly | `fem.*` | mesh, material | not specced |
-| 4 Ports | `ports.*` | mesh, material | not specced |
+| 3 FEM assembly | `fem.*` | mesh, material | specced |
+| 4 Ports | `ports.*` | mesh, material | specced |
 | 5 PML | `pml.*` | material | not specced |
 | 6 Solve / sweep | `solve.*` | fem, ports, pml | not specced |
 | 7 S-parameter extraction | `extract.*` | ports, solve | not specced |
@@ -88,6 +88,12 @@ mesh read-only. Module 0 also introduces two boundary tags beyond Module 1's ori
 lateral faces, explicitly tagged so Module 1's "every boundary face must resolve to a tag"
 coverage check stays meaningful rather than flagging it as an omission). See
 `docs/module0_geometry_builder_equations.md`.
+
+`docs/module3_fem_assembly_equations.md` §1 added three small, purely geometric additions to
+Module 1's contract — barycentric weights returned from `quadrature_tet`, a per-tet volume tag
+accessor, and `pec_edge_dofs()` — already applied to `module1_mesh_interface_equations.md`. If
+Module 1 is ever reimplemented from scratch, these three are not optional: Module 3 depends on
+all of them.
 
 ## 5. Global conventions (inherited by every module — never redefine locally)
 

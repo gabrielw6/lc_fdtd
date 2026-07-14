@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from mesh_interface import MeshGeometryError, MeshInterface
-from mesh_interface.interface import LOCAL_EDGES
+from mesh_interface.interface import LOCAL_EDGES, LOCAL_FACES
 
 from ._two_tet_patch import BOUNDARY_FACES, FULL_SURFACE_TAGS, TETS, VERTICES, VOLUME_A, VOLUME_B
 
@@ -162,7 +162,7 @@ def test_quadrature_tet_sums_to_volume():
     mi = _build()
     for tet in range(mi.n_tets):
         for order in (1, 2):
-            _points, weights = mi.quadrature_tet(tet, order)
+            _points, weights, _bary = mi.quadrature_tet(tet, order)
             assert weights.sum() == pytest.approx(mi.volume(tet), rel=1e-9)
 
 
@@ -174,3 +174,41 @@ def test_quadrature_tri_sums_to_area():
         for order in (1, 2):
             _points, weights = mi.quadrature_tri((tet, local_face), order)
             assert weights.sum() == pytest.approx(area, rel=1e-9)
+
+
+def test_quadrature_tet_barycentric_matches_physical_points():
+    mi = _build()
+    for tet in range(mi.n_tets):
+        points, _weights, bary = mi.quadrature_tet(tet, 2)
+        coords = mi.vertices[mi.tets[tet]]
+        assert np.allclose(bary @ coords, points)
+        assert np.allclose(bary.sum(axis=1), 1.0)
+
+
+# --- Module 3 Sec 1: tet_volume_tag / pec_edge_dofs -------------------------
+
+def test_tet_volume_tag_reproduces_input_array_exactly():
+    mi = _build()
+    assert mi.tet_volume_tag(0) == "A"
+    assert mi.tet_volume_tag(1) == "B"
+
+
+def test_pec_edge_dofs_matches_independent_enumeration():
+    """Module 1 doc Section 8's explicit cross-check: re-derive the PEC
+    edge set by manually enumerating each PEC face's 3 edges from its own
+    global vertex triple and looking each one up in `mi.edges` *by value*
+    -- never through `tet_edge_map` -- so this exercises a different code
+    path than `pec_edge_dofs()` itself."""
+    mi = _build()
+    edge_index_by_pair = {tuple(e): i for i, e in enumerate(mi.edges.tolist())}
+
+    expected: set[int] = set()
+    for tet, local_face in mi.boundary_faces("PEC"):
+        verts = [int(mi.tets[tet, v]) for v in LOCAL_FACES[local_face]]
+        for i in range(3):
+            for j in range(i + 1, 3):
+                pair = tuple(sorted((verts[i], verts[j])))
+                expected.add(edge_index_by_pair[pair])
+
+    assert mi.pec_edge_dofs() == expected
+    assert len(expected) > 0

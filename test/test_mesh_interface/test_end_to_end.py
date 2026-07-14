@@ -61,7 +61,7 @@ def test_quadrature_tet_sums_to_volume_for_every_tet(mesh_iface):
     for order in (1, 2):
         errors = 0
         for tet in range(mesh_iface.n_tets):
-            _points, weights = mesh_iface.quadrature_tet(tet, order)
+            _points, weights, _bary = mesh_iface.quadrature_tet(tet, order)
             if not np.isclose(weights.sum(), mesh_iface.volume(tet), rtol=1e-9):
                 errors += 1
         assert errors == 0
@@ -88,3 +88,29 @@ def test_from_mesh_handle_matches_direct_construction(mesh_iface):
     direct = MeshInterface(mesh_handle.vertices, mesh_handle.tets, mesh_handle.volume_tags, mesh_handle.surface_tags)
     assert direct.n_tets == mesh_iface.n_tets
     assert direct.n_edges == mesh_iface.n_edges
+
+
+def test_tet_volume_tag_reproduces_input_array(mesh_iface):
+    mesh_handle, _ = GeometryBuilder().build(_PARAMS)
+    for tet in range(0, mesh_iface.n_tets, 137):  # a spot-check stride, not every tet
+        assert mesh_iface.tet_volume_tag(tet) == str(mesh_handle.volume_tags[tet])
+
+
+def test_pec_edge_dofs_matches_independent_enumeration(mesh_iface):
+    """Module 1 doc Section 8's cross-check, on the real mesh: re-derive
+    the PEC edge set from each PEC face's own global vertex triple, looked
+    up in `mesh_iface.edges` by value, independent of `tet_edge_map`."""
+    edge_index_by_pair = {tuple(e): i for i, e in enumerate(mesh_iface.edges.tolist())}
+
+    expected: set[int] = set()
+    for tet, local_face in mesh_iface.boundary_faces("PEC"):
+        from mesh_interface.interface import LOCAL_FACES
+
+        verts = [int(mesh_iface.tets[tet, v]) for v in LOCAL_FACES[local_face]]
+        for i in range(3):
+            for j in range(i + 1, 3):
+                pair = tuple(sorted((verts[i], verts[j])))
+                expected.add(edge_index_by_pair[pair])
+
+    assert mesh_iface.pec_edge_dofs() == expected
+    assert len(expected) > 0

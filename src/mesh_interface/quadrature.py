@@ -63,6 +63,13 @@ _TRI_RULES: dict[int, tuple[np.ndarray, np.ndarray]] = {
 }
 
 
+def available_tet_orders() -> tuple[int, ...]:
+    """The polynomial-exactness orders currently tabulated for a tet, in
+    ascending order -- Module 3's adaptive quadrature procedure escalates
+    over exactly this list; it never assumes a specific ceiling."""
+    return tuple(sorted(_TET_RULES))
+
+
 def tet_rule(order: int) -> tuple[np.ndarray, np.ndarray]:
     """Reference barycentric points (M,4) and weights (M,) for a tet,
     exact to polynomial degree `order`, with sum(weights) == 1."""

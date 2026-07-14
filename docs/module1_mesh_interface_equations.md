@@ -263,6 +263,13 @@ with reference weights $\hat w_q$ normalized so $\sum_q\hat w_q = 1$. Map to phy
 
 $$\mathbf r_q = \sum_{i} \hat\lambda_{q,i}\,\mathbf r_i, \qquad w_q = \hat w_q \cdot V.$$
 
+**Required addition (driven by Module 3's needs)**: `quadrature_tet(order)` returns
+`(points, weights, barycentric)`, exposing the barycentric weight array $\hat\lambda_{q,i}$
+(shape $(M,4)$) alongside the physical points and scaled weights. These barycentric weights are
+already computed internally as part of the mapping above — Module 3 needs them directly to
+evaluate barycentric-coordinate-based basis functions (its $\lambda_i(\mathbf r_q)=\hat\lambda_{q,i}$)
+without redundantly reconstructing them from the affine coefficients $\alpha_i,\nabla\lambda_i$.
+
 The volume scaling by $V$ gives the required identity
 
 $$\boxed{\;\sum_q w_q = V\;}$$
@@ -344,6 +351,11 @@ frequency-dependent, so all of it runs exactly once per model.
   raises.
 - **Quadrature** (§6.3): $\sum_q w_q = V$ on every tet for every exposed order; monomial
   exactness per rule; all weights positive.
+- **New contract items** (§9): `tet_volume_tag` reproduces the input `volume_tags` array
+  exactly for every tet; `pec_edge_dofs()` matches the edge set obtained by manually
+  enumerating the three edges of every `PEC`-tagged face and intersecting against the global
+  `edges` list — run as an independent cross-check rather than trusting the same code path
+  twice.
 
 ---
 
@@ -365,17 +377,26 @@ class MeshInterface:
     tet_edge_map: (n_tets, 6) int array       # local edge -> global edge index
     tet_edge_sign: (n_tets, 6) int array      # s_e in {+1,-1}
 
+    # volume tagging (required by Module 3, to dispatch material queries per tet)
+    tet_volume_tag(tet: int) -> str           # or: volume_tags, (n_tets,) array
+
     # boundary
-    boundary_faces(tag: str) -> list[(tet, local_face)]   # tag in {PEC, PORT_p, PML_OUTER}
+    boundary_faces(tag: str) -> list[(tet, local_face)]   # tag in {PEC, PORT_p, PML_OUTER, ...}
+
+    # essential-BC support (required by Module 6, derived here since it's purely geometric)
+    pec_edge_dofs() -> set[int]               # global edge indices lying on a PEC-tagged face
 
     # quadrature
-    quadrature_tet(order: int) -> (points: (M,3), weights: (M,))     # sum weights == V
-    quadrature_tri(face, order: int) -> (points: (M,3), weights: (M,)) # sum weights == A
+    quadrature_tet(order: int) -> (points: (M,3), weights: (M,), barycentric: (M,4))
+    quadrature_tri(face, order: int) -> (points: (M,3), weights: (M,))   # sum weights == A
 ```
 
 Contract summary for consumers: `grad_lambda`, `volume`, and the edge maps are what Module 3
-assembles $\mathbf K,\mathbf M$ from; `boundary_faces('PORT_p')` + `quadrature_tri` are what
-Module 4 builds the port term from; `boundary_faces('PEC')` is the essential-BC DOF set
-Module 6 constrains out; and `quadrature_tet(order)` is the knob Module 3 turns for the
-spatially varying $\varepsilon_r$ integration in Phases 2–4. Nothing here depends on frequency
-or material — Module 1 is assembled once and read many times.
+assembles $\mathbf K,\mathbf M$ from; `tet_volume_tag` is what Module 3 uses to dispatch each
+element's quadrature-point material query to the right entry in Module 2's `MaterialAssembly`;
+`boundary_faces('PORT_p')` + `quadrature_tri` are what Module 4 builds the port term from;
+`pec_edge_dofs()` is the DOF set Module 6 eliminates when applying the essential BC (Module 3
+itself never applies it — it assembles the full unconstrained system); and
+`quadrature_tet(order)`'s `barycentric` output is what Module 3 evaluates its basis functions
+against directly, without reconstructing $\lambda_i$ from the affine coefficients. Nothing here
+depends on frequency or material — Module 1 is assembled once and read many times.

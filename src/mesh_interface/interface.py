@@ -23,6 +23,15 @@ DimTag = tuple[int, int]
 LOCAL_EDGES: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
 LOCAL_FACES: tuple[tuple[int, int, int], ...] = ((1, 2, 3), (0, 2, 3), (0, 1, 3), (0, 1, 2))
 
+# For each local face, the local edge indices whose both endpoints lie on
+# that face -- computed from LOCAL_EDGES/LOCAL_FACES above rather than
+# hand-transcribed, so it can never drift out of sync with them. Used by
+# `pec_edge_dofs()`.
+LOCAL_FACE_EDGES: tuple[tuple[int, ...], ...] = tuple(
+    tuple(local_edge for local_edge, (a, b) in enumerate(LOCAL_EDGES) if a in face and b in face)
+    for face in LOCAL_FACES
+)
+
 # Section 5.3: tag resolution -- Module 0's concrete surface-tag names
 # aggregated under Module 1's generic vocabulary.
 _PEC_TAGS: tuple[str, ...] = ("PEC_GROUND", "PEC_LINE")
@@ -110,6 +119,11 @@ class MeshInterface:
         vertex `local_face` (Section 3.1's naming)."""
         return float(self._face_area[tet, local_face]), self._face_normal[tet, local_face]
 
+    def tet_volume_tag(self, tet: int) -> str:
+        """Module 3 §1 item 2: the region tag governing `tet` -- what
+        Module 3's assembler dispatches its `MaterialAssembly` query on."""
+        return str(self.volume_tags[tet])
+
     # --- Section 9: boundary ---
 
     def boundary_faces(self, tag: str) -> list[DimTag]:
@@ -130,20 +144,35 @@ class MeshInterface:
             out.extend(self._tagged_faces.get(name, []))
         return out
 
+    def pec_edge_dofs(self) -> set[int]:
+        """Module 3 §1 item 3: global edge indices lying on a `PEC`-tagged
+        face -- the DOF set Module 6 eliminates when applying the
+        essential BC. Purely geometric (derived once, here, from data this
+        class already owns); Module 3 itself never applies it."""
+        dofs: set[int] = set()
+        for tet, local_face in self.boundary_faces("PEC"):
+            for local_edge in LOCAL_FACE_EDGES[local_face]:
+                dofs.add(int(self.tet_edge_map[tet, local_edge]))
+        return dofs
+
     # --- Section 9: quadrature ---
 
-    def quadrature_tet(self, tet: int, order: int) -> tuple[np.ndarray, np.ndarray]:
+    def quadrature_tet(self, tet: int, order: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Section 6.1's mapping applied to `tet`: `sum(weights) ==
-        volume(tet)`. (Section 9 lists this without a `tet` argument, but
-        Section 6.1's own mapping -- r_q = sum_i lambda_i r_i, scaled by
-        this element's V -- is inherently per-element; the argument is
-        added here so the documented `sum(weights)==V` contract is
-        actually achievable.)"""
+        volume(tet)`. Also returns the `(M,4)` barycentric weights used to
+        build the physical points -- Module 3 §1 item 1: it needs them
+        directly to evaluate its basis functions at the same quadrature
+        points, without reconstructing lambda_i from the affine
+        coefficients. (Section 9 lists `quadrature_tet` without a `tet`
+        argument, but Section 6.1's own mapping -- r_q = sum_i lambda_i
+        r_i, scaled by this element's V -- is inherently per-element; the
+        argument is added here so the documented `sum(weights)==V`
+        contract is actually achievable.)"""
         bary, w_hat = quadrature.tet_rule(order)
         coords = self.vertices[self.tets[tet]]
         points = bary @ coords
         weights = w_hat * self._volume[tet]
-        return points, weights
+        return points, weights, bary
 
     def quadrature_tri(self, face: DimTag, order: int) -> tuple[np.ndarray, np.ndarray]:
         """Section 6.1's mapping for a triangular face `(tet,
