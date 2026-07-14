@@ -73,7 +73,7 @@ $\|\varepsilon_r - \varepsilon_r^{T}\| < \varepsilon_{\text{tol}}$ elementwise. 
 the single most diagnostic check in the whole material layer — a failure here is the proximate
 cause of every downstream reciprocity failure in Module 3/8.
 
-### 1.3 Passivity (required of every implementation)
+### 1.3 Passivity (required of every implementation, with one documented exception)
 
 Under the $e^{+j\omega t}$ convention, write $\varepsilon_r = A - jB$ with $A,B$ real. Symmetry
 of $\varepsilon_r$ forces $A=A^{T}$, $B=B^{T}$ separately (real and imaginary parts of a complex
@@ -88,6 +88,15 @@ the specific uniaxial-LC case. Keep the general check in `material.core` as the 
 default for any implementation that *isn't* the LC uniaxial construction (e.g. a hand-specified
 Phase 3 tensor with no special structure); use the cheap scalar version (§4.6) wherever the
 uniaxial structure actually applies.
+
+**Documented exception: `PMLMaterial` (Module 5) is exempt from this check.** PML's
+complex-coordinate-stretching tensor has a normal-direction component whose imaginary part is
+*positive* by construction (Module 5 §4.1's derivation: $\mathrm{Im}(1/s_z)\ge0$), which is
+what makes the tensor matched, not a sign error. `MaterialAssembly` (or `PMLMaterial` itself)
+must skip this check for that specific `MaterialModel`; the correct correctness criterion for
+PML is the wave-attenuation/reflection-coefficient argument in Module 5 §2.4/§5.1, not this
+per-tensor test. Do not "fix" a correctly implemented `PMLMaterial` to satisfy this check —
+doing so un-matches the layer.
 
 ### 1.4 `MaterialAssembly` — the tag-dispatch registry
 

@@ -7,6 +7,18 @@ multiple equivalent conventions in the literature, and this document is honest a
 parts are derived with full confidence versus which single arrangement should be
 cross-checked against a reference during implementation.
 
+**Implementation status**: implemented in `src/ports/` (`cross_section.py`, `basis2d.py`,
+`mode_solver.py`, `port_operator.py`), 31 tests passing alongside the rest of the repo. Three
+things independent verification changed relative to this document's original text, applied
+below at their respective sections: §3.6 gained a required spurious-mode filter (not merely a
+caveat); §3.7 gained a documented, currently-unresolved mode-selection limitation with a
+forward reference to Module 6; §4.3's projection formula had a genuine factor-of-2 gap, now
+fixed by self-normalization rather than by resolving the exact convention analytically. A
+`float()`-cast bug that silently discarded $\mathrm{Im}(\varepsilon_r)$ in $S_{tt}/S_{zz}$ for
+lossy materials was caught and fixed before shipping — worth noting since it's exactly the kind
+of silent-wrong-number bug this whole document series has tried to guard against with runtime
+assertions rather than trust.
+
 **Notation fixed for this entire document**: propagation direction is $\hat x$ (the global
 length axis — this is where microstrip literature's generic "$\hat z$, axial direction" maps
 onto *our* axes). The port cross-section is the global $(y,z)$ plane (width, height) at fixed
@@ -203,12 +215,50 @@ Jensen/Wheeler) at low frequency. Use a general (non-symmetric-pencil-capable) e
 QZ) regardless, since it handles both the symmetric and non-symmetric arrangements correctly —
 there's no need to force symmetry algebraically if a general solver is used throughout.
 
+**Confirmed by implementation: this discretization admits spurious eigenvalue solutions**, as
+the honesty flag above anticipated. A **physical-bounds filter is required, not optional**:
+discard any candidate whose $\beta$ falls outside $\big[k_0\sqrt{\varepsilon_{r,\min}},\,
+k_0\sqrt{\varepsilon_{r,\max}}\big]$, where $\varepsilon_{r,\min},\varepsilon_{r,\max}$ are the
+smallest and largest relative permittivities present in the port cross-section (here, $1$ for
+air and $\varepsilon_{r,\text{sub}}$ for the substrate) — a genuine guided mode's effective index
+must lie between the extremes of the index actually present, so anything outside that band is
+numerical, not physical. Verified in implementation to remove the spurious solution cleanly
+without discarding legitimate modes. This filter should run immediately after the eigensolve,
+before mode selection (§3.7), since a spurious solution can otherwise be mistaken for a
+legitimate higher-order mode rather than recognized as numerical noise.
+
 ### 3.7 Mode selection
 
 Solve for the lowest few eigenvalues (2–3, per the top-level doc's cross-polarization
 requirement) at each frequency, sorted by decreasing $\beta$ (the dominant, quasi-TEM-like mode
 has the largest propagating $\beta$; higher-order modes have smaller $\beta$ or are evanescent).
 Retain $(\gamma_m, \mathbf e_m, \tilde e_{x,m})$ for each retained mode $m$.
+
+**Known limitation, confirmed by implementation, currently unresolved**: Module 0's
+`PMC_SIDE` lateral truncation makes each port cross-section a finite, PMC-walled enclosure —
+not a genuinely open one — and that enclosure supports its own "box modes" (ordinary waveguide
+modes of the PMC-walled cross-section) with $\beta$ values that can sit close to, or briefly
+cross, the real quasi-TEM microstrip mode's $\beta$ at some frequencies and mesh resolutions.
+Plain $\beta$-sorting (as specified above) can therefore occasionally select a box mode instead
+of the physical mode. A field-pattern discriminator (concentration of $|\mathbf e_t|$ near the
+trace) was tried and did not generalize across mesh resolutions — it is not included here, since
+a heuristic that helps at one resolution and hurts at another is worse than no heuristic, not
+better. This is left as a documented limitation rather than a false fix.
+
+**Principled path forward, deferred to Module 6**: the standard resolution for this exact
+problem (used in mode-tracking waveguide-port solvers generally) is **continuity across the
+frequency sweep, not an absolute per-frequency criterion**. At the sweep's starting frequency
+— chosen low enough that box modes (which have their own cutoffs) are still evanescent while
+the quasi-TEM mode, having no cutoff, propagates — plain $\beta$-sorting should unambiguously
+select the correct mode. At each subsequent frequency, instead of re-sorting by $\beta$ alone,
+select the candidate whose field pattern has the highest overlap
+($\int(\mathbf e_t^{(k)}\times\mathbf h_t^{(k-1)})\cdot\hat x\,dS$, i.e. the §4.3 projection
+applied between consecutive frequency points) with the *previous* frequency's selected mode.
+This discriminates robustly even through a near-degenerate crossing, since it tracks field-shape
+continuity rather than an instantaneous $\beta$ ordering — but it inherently requires comparing
+across frequency points, which only Module 6's sweep driver can do; `ports.mode_solver` in
+isolation, solving one frequency at a time, cannot implement this itself. Record this now so
+it isn't rediscovered as a surprise when Module 6 is specced.
 
 ### 3.8 Recovering the transverse magnetic field
 
@@ -238,6 +288,17 @@ h_t^{*})\cdot\hat x\,dS$, and via $P_m = \tfrac12\mathrm{Re}(Y_m)\int_S|\mathbf 
 follows algebraically from the $Y_m$ relation above). Disagreement flags an error in the
 extracted $Y_m$ or in $\mathbf h_t$'s reconstruction (§3.8).
 
+**Note on a real inconsistency found here, resolved in §4.3**: this section's $P_m$ uses the
+*conjugated* Poynting form ($\mathbf h_t^{*}$, with the customary $\tfrac12$), while §4.3's
+biorthogonality relation, as originally stated, used the *unconjugated* overlap
+$\int(\mathbf e_m\times\mathbf h_n)\cdot\hat x\,dS$ with no $\tfrac12$ — the two are genuinely
+different bilinear forms (conjugated overlap gives physical time-averaged power; unconjugated
+overlap is the reciprocity-based pairing that S-parameter theory actually needs) and are not
+guaranteed to coincide numerically just because both are loosely called "the mode's power."
+Implementation confirmed a real factor-of-2 gap between them. §4.3 now resolves this by
+normalizing against whichever self-overlap the code actually computes, rather than assuming the
+unconjugated overlap equals $P_m=1$ by construction.
+
 ### 4.2 Power normalization
 
 Scale the raw eigenvector $(\mathbf e_t,\mathbf h_t)\to(\alpha\mathbf e_t,\alpha\mathbf h_t)$ so
@@ -249,22 +310,34 @@ Fix $\alpha$'s phase by convention (e.g. real and positive at the point of maxim
 $|\mathbf e_t|$) — the phase is physically arbitrary for a linear mode but must be applied
 consistently so repeated solves at nearby frequencies don't flip sign discontinuously.
 
-### 4.3 Modal projection — a refinement to the top-level doc's sketch
+### 4.3 Modal projection — a refinement to the top-level doc's sketch, corrected during implementation
 
 The top-level architecture doc's §4.2/§7 sketched modal amplitude extraction as an $E$-field
 self-overlap, $V_m = (1/N_m)\int\mathbf E_t\cdot\mathbf e_m\,dS$. **This document refines that**:
 the standard, generally-correct modal decomposition uses the **biorthogonality relation**
-$\int_S(\mathbf e_m\times\mathbf h_n)\cdot\hat x\,dS = P_m\delta_{mn}$ (which holds generally,
+$\int_S(\mathbf e_m\times\mathbf h_n)\cdot\hat x\,dS = N_m\delta_{mn}$ (which holds generally,
 not just when the $\mathbf e_m$ happen to be mutually $L^2$-orthogonal — a stronger condition
-the simplified sketch implicitly assumed). With unit-power normalization ($P_m=1$), the correct
-projection of an arbitrary tangential field $\mathbf E_t$ onto mode $m$ is:
+the simplified sketch implicitly assumed) — using $N_m$ here deliberately, **not** $P_m$, per
+the §4.1 note above: $N_m \equiv \int_S(\mathbf e_m\times\mathbf h_m)\cdot\hat x\,dS$ is whatever
+the unconjugated self-overlap actually evaluates to for this mode's normalization convention,
+not assumed equal to the conjugated $P_m=1$ target.
 
-$$\boxed{\;a_m = \int_S (\mathbf E_t\times\mathbf h_m)\cdot\hat x\,dS\;}$$
+$$\boxed{\;a_m = \frac{1}{N_m}\int_S (\mathbf E_t\times\mathbf h_m)\cdot\hat x\,dS\;}$$
 
-with **no denominator at all** once $P_m=1$ is baked into $\mathbf h_m$'s normalization — simpler
-than the top-level sketch, not just more robust. **This refinement must propagate to Module 7**
-(S-parameter extraction) when that module is specced; the projection there should use this
-$H$-field-based overlap, not the $E$-field self-overlap sketched earlier.
+**Implementation guidance, corrected from this document's original claim**: the original text
+asserted the denominator could be dropped entirely once $P_m=1$ (§4.2) was applied, reasoning
+that unit-power normalization already bakes in $N_m=1$. **Verified false during
+implementation** — a real factor-of-2 gap between $N_m$ and $P_m$ was found and confirmed both
+analytically (the conjugate/unconjugate distinction, §4.1) and numerically. The robust fix,
+applied in `port_operator.py`, is to **compute $N_m$ explicitly for each mode and divide by it**,
+rather than trusting any single derivation of what $N_m$ "should" equal given the normalization
+convention — this sidesteps needing to resolve the exact conjugation bookkeeping analytically,
+since the code is self-consistent by construction regardless of which convention it happens to
+be using internally. **This same self-normalization must be applied everywhere $N_m$ or $P_m$
+appears in a projection** — including Module 7's extraction, once specced. This document's
+first draft claimed the $1/N_m$ factor could be dropped entirely once $P_m=1$ was applied,
+reasoning that unit-power normalization already bakes in $N_m=1$; that claim is **superseded**
+by the finding above — keep the explicit division.
 
 ---
 
@@ -286,6 +359,14 @@ the piece proportional to the known incident amplitude $a_m^{+,\text{inc}}$:
 $$B_{p,ij} = -j\omega\mu_0\sum_m Y_m\left(\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS\right)\left(\int_{S_p}(\mathbf W_j)_t\times\mathbf h_m\cdot\hat x\,dS\right)$$
 
 $$g_{p,i} = -2j\omega\mu_0\sum_m Y_m\,a_m^{+,\text{inc}}\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS$$
+
+**Propagating the §4.3 fix**: the derivation above uses the §4.3 projection to express $a_m^-$,
+so the same self-normalization applies here — either normalize each mode so $N_m=1$ exactly
+(not merely $P_m=1$) before it's used in $\mathbf B_p,\mathbf g_p$, or insert the explicit
+$1/N_m$ factor into both formulas above wherever an $\mathbf e_m$–$\mathbf h_m$ overlap appears.
+This document's formulas above are written assuming one of those two equivalent fixes has been
+applied — confirm which approach `port_operator.py` actually takes and that it's applied
+consistently everywhere an overlap of this form is used, including Module 7 once it exists.
 
 **Honesty flag, matching the top-level doc's own stance on this exact term**: the overall sign
 here came out opposite the top-level doc's earlier compressed sketch of $g_{p,i}$. This is
@@ -338,16 +419,25 @@ a per-mode analytic phase/attenuation correction, applied in Module 7.
    Module 1/3's 3D analogues (partition-of-unity, Kronecker reproduction, curl reproduction).
 3. Assemble $S_{tt}, S_{zz}, T_{tt}, T_{zt}, S_{tz}$ (§3.5) for a single test frequency on a
    simple two-material (substrate+air) cross-section; verify $S_{tz}=-T_{zt}^{T}$ numerically.
-4. Solve the generalized eigenproblem (§3.6) via a general (QZ-capable) solver; verify real
-   $\gamma^2$ for the lossless case **before** trusting any subsequent result — this is the
-   first checkpoint that would catch a block-arrangement error from §3.6.
+4. Solve the generalized eigenproblem (§3.6) via a general (QZ-capable) solver; **apply the
+   physical-bounds filter immediately** (discard $\beta$ outside $[k_0\sqrt{\varepsilon_{r,\min}},
+   k_0\sqrt{\varepsilon_{r,\max}}]$ — confirmed required, not optional); verify real $\gamma^2$
+   for the lossless case **before** trusting any subsequent result — this is the first
+   checkpoint that would catch a block-arrangement error from §3.6.
 5. Reconstruct $\mathbf h_t$ (§3.8); extract $Y_m$ (§4.1) and run its Poynting-integral
    consistency check; apply the power normalization (§4.2).
 6. Validate the dominant mode's $\beta(\omega)$ against Hammerstad–Jensen/Wheeler — this is the
    analytic gate that most directly tests whether §3.6's arrangement, despite the honesty flag,
    produced physically correct results.
-7. Implement the §4.3 projection and verify biorthogonality ($\int(\mathbf e_m\times\mathbf
-   h_n)\cdot\hat x\,dS\approx\delta_{mn}$ for the retained modes) numerically.
+7. Implement the §4.3 projection **with explicit self-normalization against each mode's
+   computed $N_m$** (not assumed equal to 1) and verify biorthogonality ($\int(\mathbf
+   e_m\times\mathbf h_n)\cdot\hat x\,dS\approx\delta_{mn}$ after normalization, for the retained
+   modes) numerically.
+7a. Robustness improvement, unrelated to the above but worth building in at the same time:
+   `solve()` should skip individual eigensolve candidates that turn out to be un-normalizable
+   (§4.2's normalization fails, e.g. $\mathrm{Re}(Y_m)\approx0$) rather than letting the whole
+   call crash — a candidate that can't reach $P_m=1$ isn't a valid captured mode regardless of
+   what caused the failure.
 8. Implement `ports.port_operator` (§5): $\mathbf B_p$, then $\mathbf g_p$ for a single-mode
    excitation, with the caching strategy (§5.2) built in from the start.
 9. Implement de-embedding (§6) — simple, low-risk relative to the rest of this module.
@@ -359,20 +449,30 @@ a per-mode analytic phase/attenuation correction, applied in Module 7.
 
 - **Real eigenvalues (lossless case)**: $\gamma^2$ real to numerical tolerance for real
   $\varepsilon_r$ — the primary, non-negotiable check on §3.6's arrangement, run before anything
-  downstream is trusted.
+  downstream is trusted. **Confirmed in implementation to ~$10^{-18}$ relative precision.**
+- **Physical-bounds filter** (§3.6): confirmed in implementation to remove the spurious
+  eigensolve solution cleanly, without discarding any legitimate mode.
 - **Analytic gate**: dominant mode $\beta(\omega)$ vs. Hammerstad–Jensen/Wheeler, converging
   under mesh refinement (ties into the top-level doc's Phase 1 gate).
 - **Biorthogonality**: $\int(\mathbf e_m\times\mathbf h_n)\cdot\hat x\,dS \approx \delta_{mn}$
-  for the retained modes, at several frequencies.
+  for the retained modes, at several frequencies — **verified after applying the §4.3
+  self-normalization fix**; checking this before the fix is exactly what would have exposed the
+  factor-of-2 gap, worth keeping as a standing regression test for that reason.
 - **$Y_m$ consistency** (§4.1): the two independent power computations agree.
 - **$S_{tz}=-T_{zt}^{T}$** (§3.5): exact algebraic identity, checked regardless of the §3.6
   arrangement question.
 - **PEC edge correctness** (§2.3): confirm both the outer ground-plane edge and the internal
   trace segment are captured, on a hand-constructed small test mesh where the expected edge
-  set is known in advance.
+  set is known in advance. **Confirmed on the real microstrip geometry.**
 - **$\ge 2$ modes captured**, with the second mode's field pattern visually/numerically
   distinct from the dominant mode (not a numerical duplicate) — guards against a degenerate or
   under-resolved eigensolve silently returning the same mode twice.
+- **Open validation item, not yet resolvable in isolation**: §3.7's box-mode mode-selection
+  limitation has no test that can pass reliably within this module alone, since discriminating
+  the quasi-TEM mode from a near-degenerate box mode by any *per-frequency* criterion was shown
+  not to generalize across mesh resolutions. The only currently-known reliable resolution
+  (frequency-to-frequency mode tracking, §3.7) requires Module 6 to exist. Track this as a known
+  gap rather than closing it with an unconvincing single-frequency test.
 - **$B_p$ symmetry** (§5.1): structural check independent of the overall sign question.
 - **End-to-end sign resolution**: since §3.6 and §5.1 both carry explicit honesty flags, the
   real acceptance criterion for this module is the top-level doc's Phase 1 gate — reciprocity

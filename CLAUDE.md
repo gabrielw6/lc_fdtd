@@ -74,8 +74,8 @@ then the code. Never let them silently drift.
 | 1 Mesh interface (geometry) | `mesh.interface` | Module 0's output | specced |
 | 2 Material model | `material.*` | mesh | specced |
 | 3 FEM assembly | `fem.*` | mesh, material | specced |
-| 4 Ports | `ports.*` | mesh, material | specced |
-| 5 PML | `pml.*` | material | not specced |
+| 4 Ports | `ports.*` | mesh, material | implemented, verified (see note below) |
+| 5 PML | `pml.*` | material | specced |
 | 6 Solve / sweep | `solve.*` | fem, ports, pml | not specced |
 | 7 S-parameter extraction | `extract.*` | ports, solve | not specced |
 | 8 Validation | `validation.*` | all | not specced |
@@ -94,6 +94,25 @@ Module 1's contract — barycentric weights returned from `quadrature_tet`, a pe
 accessor, and `pec_edge_dofs()` — already applied to `module1_mesh_interface_equations.md`. If
 Module 1 is ever reimplemented from scratch, these three are not optional: Module 3 depends on
 all of them.
+
+`docs/module5_pml_equations.md` §4 required one small addition to Module 2's contract: `material.core`'s
+generic passivity check (§1.3 there) is documented as **not applying to `PMLMaterial`** — its
+normal-direction tensor component has a positive imaginary part by construction (this is what
+makes it matched, not a sign error). Already applied to `module2_material_equations.md`. Do not
+"fix" `PMLMaterial`'s sign to satisfy the generic check; validate PML correctness via the
+reflection-coefficient test in Module 5 §5.1 instead.
+
+**Carry-forward from Module 4's implementation, blocking on Module 6**: `ports.mode_solver`'s
+mode selection (`module4_ports_equations.md` §3.7) has a known, currently-unresolved limitation
+— plain $\beta$-sorting can occasionally select a spurious "box mode" of the PMC-walled port
+enclosure instead of the physical quasi-TEM mode, since the two can have close $\beta$ at some
+frequencies/mesh resolutions. A per-frequency field-pattern heuristic was tried and rejected
+(didn't generalize across mesh resolutions). The principled fix — tracking mode continuity
+across consecutive frequency points via field-overlap correlation, seeded by a low starting
+frequency where box modes are still evanescent — requires Module 6's sweep driver to exist,
+since it inherently compares across frequency points. **When Module 6 is specced, this is a
+required piece of its design, not an optional refinement** — do not treat Module 4 as fully
+closed out until this is addressed there.
 
 ## 5. Global conventions (inherited by every module — never redefine locally)
 
