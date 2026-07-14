@@ -5,6 +5,7 @@ interference check (interference.py) passes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 DimTag = tuple[int, int]
 
@@ -56,3 +57,32 @@ def fragment_and_tag(cavity_dim_tag: DimTag, sample_dim_tag: DimTag) -> TaggedGe
         background_physical_tag=background_pg,
         boundary_physical_tag=boundary_pg,
     )
+
+
+def fragment(
+    objects: Sequence[DimTag], tools: Sequence[DimTag] = ()
+) -> tuple[list[DimTag], list[list[DimTag]]]:
+    """Thin wrapper over OCC's boolean fragment across an arbitrary number
+    of entities of any dimension -- the generic building block a caller
+    with a fixed multi-piece topology (more than the cavity/sample pair
+    `fragment_and_tag` assumes) uses directly. Returns the raw `(out,
+    out_map)` Gmsh gives back: `out_map` has one entry per input (`objects`
+    first, then `tools`, in input order), each the list of output entities
+    that input became -- the caller's own bookkeeping for which piece is
+    which."""
+    import gmsh
+
+    occ = gmsh.model.occ
+    out, out_map = occ.fragment(list(objects), list(tools))
+    occ.synchronize()
+    return out, out_map
+
+
+def add_physical_group(dim: int, tags: Sequence[int], name: str) -> int:
+    """Thin wrapper over `gmsh.model.addPhysicalGroup` -- the generic
+    building block for assigning an arbitrary caller-chosen name to an
+    arbitrary set of entities, as opposed to `fragment_and_tag`'s fixed
+    sample/background/boundary vocabulary."""
+    import gmsh
+
+    return gmsh.model.addPhysicalGroup(dim, list(tags), name=name)

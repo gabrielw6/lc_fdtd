@@ -11,7 +11,7 @@ import gmsh
 import numpy as np
 import pytest
 
-from meshing.tagging import fragment_and_tag
+from meshing.tagging import add_physical_group, fragment, fragment_and_tag
 
 A, B, C = 0.03, 0.03, 0.03
 
@@ -77,3 +77,38 @@ def test_physical_group_tags_are_distinct(gmsh_model):
     tagged = fragment_and_tag(cav_dt, sample_dt)
     tags = {tagged.sample_physical_tag, tagged.background_physical_tag, tagged.boundary_physical_tag}
     assert len(tags) == 3
+
+
+# --- Generic fragment / add_physical_group (used by geometry_builder) -----
+
+def test_fragment_preserves_adjacent_non_overlapping_solids(gmsh_model):
+    """Self-fragmenting a flat list of boxes that only touch at coincident
+    faces (no actual overlap) should preserve one output volume per input,
+    conformal at the shared faces -- the building block a multi-brick
+    parametric layout relies on."""
+    occ = gmsh.model.occ
+    b1 = (3, occ.addBox(0, 0, 0, 1, 1, 1))
+    b2 = (3, occ.addBox(1, 0, 0, 1, 1, 1))
+    occ.synchronize()
+
+    out, out_map = fragment([b1, b2], [])
+
+    assert out_map == [[b1], [b2]]
+    assert set(out) == {b1, b2}
+    assert occ.getMass(*b1) == pytest.approx(1.0)
+    assert occ.getMass(*b2) == pytest.approx(1.0)
+
+
+def test_add_physical_group_returns_a_usable_tag(gmsh_model):
+    occ = gmsh.model.occ
+    b1 = occ.addBox(0, 0, 0, 1, 1, 1)
+    b2 = occ.addBox(2, 0, 0, 1, 1, 1)
+    occ.synchronize()
+
+    pg = add_physical_group(3, [b1, b2], "REGION_A")
+
+    names = {}
+    for dim, tag in gmsh.model.getPhysicalGroups(3):
+        names[gmsh.model.getPhysicalName(dim, tag)] = tag
+    assert names["REGION_A"] == pg
+    assert set(gmsh.model.getEntitiesForPhysicalGroup(3, pg)) == {b1, b2}

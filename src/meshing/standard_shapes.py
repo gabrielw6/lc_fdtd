@@ -17,6 +17,23 @@ CavityShape = Box | CylindricalDomain | CoaxialDomain
 SampleShape = Sphere | Cylinder | Slab
 
 
+def build_box(corner: tuple[float, float, float], dims: tuple[float, float, float]) -> DimTag:
+    """Returns the (dim, tag) of an axis-aligned OCC box of size `dims`
+    with its lower corner at `corner`. Generic building block -- a caller
+    needing more than one box at controlled positions (e.g. a multi-brick
+    parametric layout) uses this directly instead of the single-origin-
+    cornered `Box` dispatch in `build_cavity_solid`. Requires an active
+    Gmsh model (caller's responsibility)."""
+    import gmsh
+
+    occ = gmsh.model.occ
+    cx, cy, cz = (float(v) for v in corner)
+    dx, dy, dz = (float(v) for v in dims)
+    tag = occ.addBox(cx, cy, cz, dx, dy, dz)
+    occ.synchronize()
+    return (3, tag)
+
+
 def build_cavity_solid(shape: CavityShape) -> DimTag:
     """Returns the (dim, tag) of the OCC solid for the outer volume, built
     directly from `shape`'s own dimension fields. Requires an active Gmsh
@@ -26,7 +43,7 @@ def build_cavity_solid(shape: CavityShape) -> DimTag:
 
     occ = gmsh.model.occ
     if isinstance(shape, Box):
-        tag = occ.addBox(0.0, 0.0, 0.0, shape.a, shape.b, shape.c)
+        return build_box((0.0, 0.0, 0.0), (shape.a, shape.b, shape.c))
     elif isinstance(shape, CoaxialDomain):
         # CoaxialDomain is checked before CylindricalDomain -- both are
         # unrelated classes here (no inheritance), but keeping the more

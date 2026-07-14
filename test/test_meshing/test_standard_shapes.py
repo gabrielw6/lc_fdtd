@@ -15,6 +15,23 @@ def _occ_volume(dim_tag: tuple[int, int]) -> float:
     return gmsh.model.occ.getMass(*dim_tag)  # type: ignore[no-any-return]
 
 
+# --- Generic box builder --------------------------------------------------
+
+def test_build_box_volume_and_position(gmsh_model):
+    corner = (0.01, 0.02, 0.03)
+    dims = (0.04, 0.05, 0.06)
+    dim_tag = standard_shapes.build_box(corner, dims)
+    assert _occ_volume(dim_tag) == pytest.approx(dims[0] * dims[1] * dims[2], rel=1e-9)
+    xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(*dim_tag)
+    # abs=1e-6, not tighter: OCC's own bounding-box query carries a little
+    # tessellation/tolerance slop even for an axis-aligned box (same caveat
+    # documented on test_slab_sample_position_and_orientation above).
+    assert (xmin, ymin, zmin) == pytest.approx(corner, abs=1e-6)
+    assert (xmax, ymax, zmax) == pytest.approx(
+        (corner[0] + dims[0], corner[1] + dims[1], corner[2] + dims[2]), abs=1e-6
+    )
+
+
 # --- Outer volume --------------------------------------------------------
 
 def test_box_volume(gmsh_model):
