@@ -28,7 +28,7 @@ _SRC = Path(__file__).resolve().parent
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from extract import assemble_sweep_dataset, deembed, raw_s_parameters  # noqa: E402
+from extract import assemble_sweep_dataset, deembed, energy_balance, raw_s_parameters  # noqa: E402
 from geometry_builder import GeometryBuilder, GeometryParams  # noqa: E402
 from geometry_builder.params import GeometryParameterError  # noqa: E402
 from material import ConstantMaterial, DirectorFieldMaterial, MaterialAssembly, load_material_spec  # noqa: E402
@@ -459,7 +459,22 @@ def main(argv: list[str] | None = None) -> int:
         for omega in omegas:
             freq_results = [r for r in sweep_results if r.omega == omega]
             raw_S = raw_s_parameters(freq_results, ports, args.n_modes)
-            S_by_freq.append(deembed(raw_S, freq_results[0].port_modes, offsets))
+            S_deembedded = deembed(raw_S, freq_results[0].port_modes, offsets)
+            S_by_freq.append(S_deembedded)
+            # Section 5's extended energy-balance sum, per excited port --
+            # printed (not silently dropped) so a lossless structure's
+            # energy-conservation deficit is visible on every run, not just
+            # in a dedicated passivity test. Should be close to 1.0 for a
+            # lossless, adequately-resolved configuration (Module 7 Section
+            # 5); a value far from 1.0 signals either a genuine loss/PML-
+            # absorption mechanism, an under-resolved mesh, or -- what this
+            # normalization fix specifically targeted -- an
+            # injection/extraction convention mismatch, not something a PML
+            # choice alone can explain for an otherwise-lossless structure.
+            f_hz = float(omega) / (2.0 * np.pi)
+            for q in ports:
+                balance = energy_balance(S_deembedded, q, args.n_modes)
+                log(f"  energy balance at {f_hz:.4g} Hz, excite {q}: sum|S|^2 = {balance:.4f}")
 
         dataset = assemble_sweep_dataset(omegas, S_by_freq)  # noqa: F841 -- built for API completeness/future reuse
         csv_text = _format_csv(omegas, ports, S_by_freq, args.n_modes)

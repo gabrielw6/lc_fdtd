@@ -73,6 +73,11 @@ class PortMode:
     ex_tilde_vertex_dofs: np.ndarray = field(repr=False)  # (n_vertices,) complex, tilde_e_x=gamma*e_x
     overlap_e: np.ndarray = field(repr=False)  # (n_edges,) integral W_i . e_m dS (Section 5.1/5.2)
     overlap_h: np.ndarray = field(repr=False)  # (n_edges,) integral (W_j)_t x h_m . x_hat dS
+    self_overlap: complex = field(repr=False)  # N_m = integral (e_m x h_m).x_hat dS, UNconjugated
+    # (Section 4.3) -- ~2*P_m=2 for a lossless mode (see _self_overlap's own docstring), not 1.
+    # Cached here (not recomputed per call) so every consumer of N_m -- project/biorthogonality
+    # AND port_operator.build_B's own injection/extraction normalization (added post-review, see
+    # build_B's docstring) -- reads the exact same value.
 
 
 # ============================================================================
@@ -585,7 +590,8 @@ class PortModeSolver:
             )
 
         gamma_all = np.sqrt(gamma_sq)  # principal branch: Re>=0, Im>0 when purely imaginary (Section 3.7)
-
+        _flip = (np.abs(gamma_all.real) <= 1e-6 * np.abs(gamma_all.imag)) & (gamma_all.imag < 0)
+        gamma_all[_flip] *= -1
         # Discard spurious discrete solutions before ranking (see
         # `_is_spurious_propagating_mode`'s docstring): the singular-B
         # generalized eigenproblem (Section 3.6) can admit non-physical
@@ -595,6 +601,13 @@ class PortModeSolver:
         k0 = omega * np.sqrt(_c.mu_0 * _c.epsilon_0)
         eps_lo, eps_hi = _eps_r_bounds(cs, self._materials)
         beta_lo, beta_hi = k0 * np.sqrt(max(eps_lo, 0.0)), k0 * np.sqrt(max(eps_hi, 0.0))
+        import sys
+        b = np.abs(gamma_all.imag)
+        print(f"[{port_tag} {omega/2e9/np.pi:.1f}G] PRE-filter: {len(gamma_all)} modes, "
+            f"{int((b>1).sum())} with |Im g|>1; top|Im|={np.round(np.sort(b)[-4:],1)} | "
+            f"eps=[{eps_lo:.2f},{eps_hi:.2f}] band=[{beta_lo:.0f},{beta_hi:.0f}] bqTEM=261 | "
+            f"tris={cs.n_triangles} area[min,max]=[{cs.area.min():.1e},{cs.area.max():.1e}]",
+            file=sys.stderr)
         physical = np.array(
             [not _is_spurious_propagating_mode(complex(g), k0, beta_lo, beta_hi) for g in gamma_all]
         )
@@ -611,6 +624,12 @@ class PortModeSolver:
         # quasi-TEM mode for a PMC-walled cross-section at some mesh
         # resolutions; not resolved further here.
         order = np.argsort(-gamma_all.imag)
+
+        import sys
+        from validation.analytic_microstrip import beta as hj_beta
+        b_qtem = hj_beta(3.0, 0.000629, 0.00025, omega)          # Hammerstad-Jensen target
+        print(f"[{port_tag} @ {omega/2e9/np.pi:.1f}GHz] beta_qTEM={b_qtem:.1f} | "
+      f"ranked betas={np.round(gamma_all.imag[:6],1)}", file=sys.stderr)
         gamma_all, vecs = gamma_all[order], vecs[:, order]
 
         # Build modes in ranked order, skipping any candidate that turns out
@@ -637,6 +656,16 @@ class PortModeSolver:
             except PortModeError:
                 continue
             overlap_e, overlap_h = _mode_overlaps(T_tt, S_tz, e_edge_dofs, ex_tilde_dofs, gamma, omega, cs.axial_sign)
+            # N_m = integral (e_m x h_m).x_hat dS, unconjugated (Section 4.3) --
+            # for free from already-computed overlap_h, since e_m = sum_j
+            # e_edge_dofs[j]*W_j and overlap_h[j] = integral (W_j)_t x h_m .
+            # x_hat_global dS already carries h_m's own axial_sign factor
+            # (`_h_t_on_triangle`'s fix); the dot product needs one more
+            # explicit axial_sign to match `_raw_overlap`'s own convention
+            # (dotted with axial_sign*x_hat_global, not bare x_hat_global) --
+            # confirmed by direct comparison against `_raw_overlap`-based
+            # brute-force quadrature for both ports (axial_sign=+1 and -1).
+            self_overlap = cs.axial_sign * complex(np.dot(e_edge_dofs, overlap_h))
 
             modes.append(
                 PortMode(
@@ -650,6 +679,7 @@ class PortModeSolver:
                     ex_tilde_vertex_dofs=ex_tilde_dofs,
                     overlap_e=overlap_e,
                     overlap_h=overlap_h,
+                    self_overlap=self_overlap,
                 )
             )
 
@@ -703,8 +733,20 @@ def _self_overlap(mode: PortMode) -> complex:
     (verified numerically: this integral came out 2.0 to 1e-15 relative
     precision on a real solved mode, not 1.0). Computing it explicitly
     here, rather than assuming 1, keeps `project`/`biorthogonality`
-    correct regardless of `Y_m`'s phase."""
-    return _raw_overlap(mode.e_t, mode)
+    correct regardless of `Y_m`'s phase.
+
+    Reads `mode.self_overlap` (Section 5.2-style caching, added post-review
+    alongside `ports.port_operator.build_B`'s own `1/N_m` injection/
+    extraction normalization fix -- see that function's docstring) rather
+    than recomputing via a fresh `_raw_overlap(mode.e_t, mode)` quadrature
+    pass every call: `PortModeSolver.solve` already computes the identical
+    value for free from `overlap_e`/`overlap_h` (confirmed by direct
+    comparison against this function's original callable-based computation,
+    for both `axial_sign=+1` and `-1` ports) at mode-construction time, and
+    every consumer of `N_m` -- this function (hence `project`/
+    `biorthogonality`/`mode_similarity`) and `build_B` -- must read the
+    exact same cached value for the two to stay consistent."""
+    return mode.self_overlap
 
 
 def project(E_t: Callable[[np.ndarray], np.ndarray], mode: PortMode) -> complex:

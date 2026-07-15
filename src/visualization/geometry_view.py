@@ -64,14 +64,15 @@ def _triangles_for_tag(mesh: MeshInterface, tag: str) -> np.ndarray:
     return tris
 
 
-def _substrate_envelope_triangles(mesh: MeshInterface) -> np.ndarray:
-    """The SUBSTRATE volume's own boundary: every tet face incident to a
-    SUBSTRATE-tagged tet on one side and either nothing or a
-    non-SUBSTRATE-tagged tet on the other. This traces the substrate
-    slab's full outline -- including the rectangular notch left by the LC
-    cutout -- independent of which faces happen to carry a surface tag,
-    since most of the substrate/air interface (everywhere but the
-    PEC_LINE patch) is untagged.
+def _volume_envelope_triangles(mesh: MeshInterface, tags: tuple[str, ...]) -> np.ndarray:
+    """A volume group's own boundary: every tet face incident to a
+    `tags`-tagged tet on one side and either nothing or a tet tagged
+    outside `tags` on the other. Generalizes what was originally
+    `_substrate_envelope_triangles` (a single-tag `("SUBSTRATE",)` call) so
+    the same envelope-tracing logic can draw the LC cavity's own outline
+    too (`("LC",)`) -- independent of which faces happen to carry a
+    surface tag, since most of a volume's own interface with its neighbors
+    (everywhere but the PEC_LINE patch) is untagged.
 
     Mirrors the face-key grouping `mesh_interface.interface._face_incidence`
     uses internally, but recomputed here rather than reaching into that
@@ -79,7 +80,7 @@ def _substrate_envelope_triangles(mesh: MeshInterface) -> np.ndarray:
     surface (Section 10 of CLAUDE.md: interfaces, not internals).
     """
     tets = mesh.tets
-    is_substrate = mesh.volume_tags == "SUBSTRATE"
+    in_group = np.isin(mesh.volume_tags, tags)
 
     local_face_vertices = tets[:, np.array(LOCAL_FACES)]  # (Nt,4,3)
     keys = np.sort(local_face_vertices.reshape(-1, 3), axis=1)
@@ -92,10 +93,10 @@ def _substrate_envelope_triangles(mesh: MeshInterface) -> np.ndarray:
 
     out = []
     for occurrences in face_lookup.values():
-        substrate_sides = [(t, lf) for t, lf in occurrences if is_substrate[t]]
-        if not substrate_sides or len(substrate_sides) == len(occurrences) == 2:
-            continue  # not touching SUBSTRATE, or interior to the substrate block itself
-        t, lf = substrate_sides[0]
+        group_sides = [(t, lf) for t, lf in occurrences if in_group[t]]
+        if not group_sides or len(group_sides) == len(occurrences) == 2:
+            continue  # not touching the group, or interior to the group's own block
+        t, lf = group_sides[0]
         verts = tets[t][list(LOCAL_FACES[lf])]
         out.append(mesh.vertices[verts])
     return np.array(out) if out else np.empty((0, 3, 3))
@@ -123,9 +124,19 @@ def plot_geometry(
 ) -> "Figure":
     """3D view of the tagged geometry: PORT_1/PORT_2 (translucent), the
     PEC_LINE trace (opaque), and -- unless `show_substrate=False` -- the
-    substrate slab's own envelope (translucent gray, including the LC
-    cutout notch). PMC_SIDE and the PML shell are never drawn (see
-    `_GEOMETRY_TAGS`).
+    substrate slab's own envelope (translucent gray) *and* the LC cavity's
+    own envelope (translucent purple, its own legend entry), drawn
+    separately since `MeshInterface.volume_tags` always distinguishes
+    `SUBSTRATE` from `LC` (the LC region is `"LC"`-tagged even for `--lc
+    none`, where its material happens to equal the substrate's -- see
+    `cli.build_lc_material`). Drawing only the `SUBSTRATE` envelope (as
+    this function originally did) rendered that shared boundary as the
+    substrate's own outer surface, i.e. a rectangular notch cut out of the
+    slab, regardless of whether the LC region was electrically
+    substrate-matched or a real anisotropic cavity -- a rendering artifact
+    only, not a meshing/material bug (the region is correctly meshed and
+    assigned `eps_r=eps_r_substrate` for `--lc none`). PMC_SIDE and the PML
+    shell are never drawn (see `_GEOMETRY_TAGS`).
 
     `ax`/`alpha_scale` (added for `viz.field_slice`'s reuse -- CLI's own
     `--show-geometry` never passes either, so its behavior is bit-for-bit
@@ -145,14 +156,19 @@ def plot_geometry(
     else:
         fig = ax.figure
 
+    handles = []
     if show_substrate:
-        tris = _substrate_envelope_triangles(mesh)
+        tris = _volume_envelope_triangles(mesh, ("SUBSTRATE",))
         if len(tris):
             ax.add_collection3d(
                 Poly3DCollection(tris, facecolor="lightgray", edgecolor="none", alpha=0.25 * alpha_scale)
             )
-
-    handles = []
+        lc_tris = _volume_envelope_triangles(mesh, ("LC",))
+        if len(lc_tris):
+            ax.add_collection3d(
+                Poly3DCollection(lc_tris, facecolor="mediumpurple", edgecolor="none", alpha=0.35 * alpha_scale)
+            )
+            handles.append(Patch(facecolor="mediumpurple", alpha=0.35, label="LC"))
     for tag, color, alpha in _GEOMETRY_TAGS:
         tris = _triangles_for_tag(mesh, tag)
         if len(tris) == 0:

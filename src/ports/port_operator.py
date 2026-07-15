@@ -13,6 +13,28 @@ reciprocity/passivity gate (Modules 6+7), not this in-isolation structural
 property, but a symmetric-by-construction `B` removes an entire class of
 spurious `SystemSymmetryError`s that had nothing to do with an actual
 tensor-index bug.
+
+**Injection/extraction normalization fix (added post-review, the
+energy-conservation/passivity review).** `build_B`'s boxed formula (like
+`build_g`'s) is derived assuming every mode is normalized so `N_m=1`
+exactly (Section 5.1's "propagating the Section 4.3 fix" paragraph) --
+but `ports.mode_solver._normalize` only enforces `P_m=1` (Section 4.2),
+and `N_m` (the *unconjugated* self-overlap Section 4.3's `project` divides
+by) is a *different* bilinear form from `P_m` (the conjugated Poynting
+power), empirically `N_m=2*P_m=2` for a lossless mode, not 1 (see
+`ports.mode_solver._self_overlap`'s own docstring). `project` (extraction)
+already carries the explicit `1/N_m` division the doc calls for; `build_B`
+(the term that routes the *solved* field's own reflected/scattered
+component -- see the derivation in this function's own docstring below --
+back into the system matrix, i.e. the same quantity `project` extracts)
+did not, until now -- an injection/extraction normalization mismatch
+(extraction correctly divides by ~2, the matching injection-side term did
+not), not a PML- or discretization-driven effect, and the actual cause of
+the passivity-gate deficit this review starts from. `build_g`'s own
+`a_m^{+,inc}` term is *not* extracted via `project` (it is a directly
+given amplitude, not measured from a solved field) and, confirmed by
+re-deriving the surface term component by component, needs no such
+correction -- see `build_g`'s own docstring.
 """
 from __future__ import annotations
 
@@ -48,17 +70,20 @@ def build_B(port_modes: dict[str, list[PortMode]], mesh: MeshInterface, omega: f
     tripping `solve.system.factor`'s symmetry check on an otherwise-fine
     system. Substituting the identity directly into the formula --
     `overlap_h -> Y_m*overlap_e` -- gives the equal-when-the-identity-holds
-    form actually assembled below:
+    form, further divided by each mode's own `N_m` (`mode.self_overlap`,
+    see the module docstring's injection/extraction normalization note)
+    since the boxed formula assumes `N_m=1`-normalized modes but the modes
+    actually available are only `P_m=1`-normalized:
 
-        B_ij = -j*omega*mu0 * sum_m (Y_m**2) * overlap_e[i] * overlap_e[j]
+        B_ij = -j*omega*mu0 * sum_m (Y_m**2) * overlap_e[i] * overlap_e[j] / N_m
 
     Every term in that sum is `(scalar) * outer(v, v)`, which is symmetric
     for *any* `v` and *any* mode quality -- not just analytically, in the
     literal matrix this function builds, regardless of how marginal the
-    contributing mode is. `overlap_h` is still computed and stored on
-    `PortMode` (Section 5.2's cache) for any other consumer (e.g. Module 7
-    extraction) that needs the un-substituted quantity; this function no
-    longer reads it.
+    contributing mode is; dividing by the scalar `N_m` does not change
+    that. `overlap_h` is still computed and stored on `PortMode` (Section
+    5.2's cache) for any other consumer (e.g. Module 7 extraction) that
+    needs the un-substituted quantity; this function no longer reads it.
 
     **Per-port axial sign -- checked, no correction needed here (per-port
     axial-orientation review).** PORT_1's outward normal is `-x_hat`
@@ -94,7 +119,9 @@ def build_B(port_modes: dict[str, list[PortMode]], mesh: MeshInterface, omega: f
 
         block = np.zeros((cs.n_edges, cs.n_edges), dtype=complex)
         for mode in modes:
-            block += -1j * omega * _c.mu_0 * (mode.Y**2) * np.outer(mode.overlap_e, mode.overlap_e)
+            block += (
+                -1j * omega * _c.mu_0 * (mode.Y**2) * np.outer(mode.overlap_e, mode.overlap_e) / mode.self_overlap
+            )
 
         ge = global_edges.tolist()
         for i, gi in enumerate(ge):
@@ -121,7 +148,23 @@ def build_g(
     docstring**: substituting `h_m=Y_m*(s_p*x_hat x e_m)` into the surface
     term's `n_out=-s_p*x_hat` reduces to `Y_m*overlap_e` with the two
     factors of `s_p` cancelling exactly. Confirmed empirically against the
-    two-port reciprocity/passivity gate."""
+    two-port reciprocity/passivity gate.
+
+    **No `1/N_m` correction needed here either (checked, the energy-
+    conservation/passivity review -- contrast with `build_B`'s own fix).**
+    The surface term splits into a piece proportional to the *known*
+    incident amplitude `a_m^{+,inc}` (this function, `g_p`) and a piece
+    proportional to the *unknown* solved-field coefficients (`build_B`).
+    Only the second piece is ever measured back out via Section 4.3's
+    `project`/`1/N_m` division -- `a_m^{+,inc}` is a directly given
+    number in the same units `mode.e_t`/`h_t` already use (one copy of the
+    `P_m=1`-normalized mode), not something extracted from a solved field,
+    so it needs no additional `N_m` rescaling. Re-deriving Section 5.1's
+    surface term component by component (tracking exactly where `a_m^-`
+    -- expressed via `project`, hence `1/N_m` -- versus `a_m^+` -- given
+    directly -- enters) confirms this split cleanly, and the passivity
+    gate (`test/test_extract/test_reciprocity_uniform_line.py`) only
+    needed `build_B`'s correction to reach `|S11|^2+|S21|^2~=1`."""
     n = mesh.n_edges
     g = np.zeros(n, dtype=complex)
 

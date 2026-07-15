@@ -19,6 +19,21 @@ lossy materials was caught and fixed before shipping — worth noting since it's
 of silent-wrong-number bug this whole document series has tried to guard against with runtime
 assertions rather than trust.
 
+**Two later post-review fixes, both in `port_operator.py`, both empirically checked against a
+passivity/reciprocity gate rather than trusted from derivation alone (this document's own
+stated posture, §5.1's honesty flag):** (1) **per-port axial orientation** — every axial
+quantity (§3.8's $\mathbf h_t$, §4.1's $Y_m$/Poynting power) was implicitly derived for PORT_1's
+own outward normal ($-\hat x$); PORT_2's is $+\hat x$, and `PortCrossSection.axial_sign`
+(derived from mesh geometry, not a hardcoded coordinate test) now threads the correct sign
+through `mode_solver.py`'s axial/H-field quantities — checked, and found **unneeded**, in
+`build_B`/`build_g` themselves (both provably axial-sign-invariant; an earlier attempt to add a
+correction to `build_B` was reverted after failing the passivity gate). (2) **injection/
+extraction ($N_m$) normalization** — §5.1's boxed $B_p$/$g_p$ assume $N_m=1$-normalized modes,
+but only $P_m=1$ (§4.2) was ever enforced; `build_B` was missing the resulting $1/N_m$ factor
+that §4.3's `project` (extraction) already applied, an injection/extraction mismatch that a
+passivity gate ($|S_{11}|^2+|S_{21}|^2=1$) catches but reciprocity/symmetry checks do not. See
+§5.1's own "Update, post-review" paragraphs for both.
+
 **Notation fixed for this entire document**: propagation direction is $\hat x$ (the global
 length axis — this is where microstrip literature's generic "$\hat z$, axial direction" maps
 onto *our* axes). The port cross-section is the global $(y,z)$ plane (width, height) at fixed
@@ -459,14 +474,43 @@ assembles this form; the un-substituted $\int_{S_p}(\mathbf W_j)_t\times\mathbf 
 x\,dS$ overlap (`overlap_h`, §5.2) is still computed and cached in case another consumer (e.g.
 Module 7) needs the un-substituted quantity, but `build_B` itself no longer reads it.
 
+**Update, post-review: the injection/extraction normalization fix (energy-conservation
+review).** The boxed formulas throughout this section (and the symmetric-by-construction
+substitution just above) are derived assuming every mode is normalized so $N_m=1$ exactly, per
+§4.3's "propagating the §4.3 fix" note — but `ports.mode_solver._normalize` only enforces
+$P_m=1$ (§4.2), and $N_m\ne P_m$ in general ($N_m=2P_m=2$ for a lossless mode, confirmed
+numerically to $10^{-15}$ relative precision — see §4.3's own factor-of-2 finding). §4.3's
+`project` (extraction) already carries the resulting explicit $1/N_m$ division; `build_B` (which
+routes that *same* solved-field quantity — the reflected/scattered wave amplitude, extracted the
+identical way — back into the system matrix as the port boundary condition) did **not**, an
+injection/extraction mismatch caught by the top-level doc's passivity gate
+($|S_{11}|^2+|S_{21}|^2=1$ for a lossless line), not by reciprocity or the structural symmetry
+check above (both insensitive to an overall real scalar factor per mode). The corrected,
+assembled form is:
+
+$$B_{p,ij} = -\frac{j\omega\mu_0}{N_m}\sum_m (Y_m)^2\left(\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS\right)\left(\int_{S_p}\mathbf W_j\cdot\mathbf e_m\,dS\right)$$
+
+— still `(scalar)*outer(v,v)` per mode ($N_m$ is a per-mode scalar), so the symmetric-by-
+construction property above is unaffected. $\mathbf g_p$ needs **no** equivalent correction:
+re-deriving the surface term component by component shows the boxed $g_p$ formula's
+$a_m^{+,\text{inc}}$ term is never routed through the $1/N_m$-carrying projection at all (it is
+a directly given incident amplitude, not a quantity extracted from a solved field, unlike the
+$a_m^-$ term that produces $B_p$) — confirmed empirically against the passivity gate, which
+needed only the $B_p$ correction above to reach $|S_{11}|^2+|S_{21}|^2\approx1$.
+
 ### 5.2 Caching
 
-The surface overlap integrals $\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS$ and
-$\int_{S_p}(\mathbf W_j)_t\times\mathbf h_m\cdot\hat x\,dS$ depend only on $(p,m,\omega)$ — not
-on which excitation is being driven. Compute and cache them **once per port per mode per
-frequency**; reuse for $\mathbf B_p$ (built once per frequency) and for every excitation's
-$\mathbf g_p$ (one per (port, mode) driven in the sweep), and hand the same cached values to
-Module 7's extraction (§4.3), which needs the identical overlaps.
+The surface overlap integrals $\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS$,
+$\int_{S_p}(\mathbf W_j)_t\times\mathbf h_m\cdot\hat x\,dS$, and $N_m=\int_{S_p}(\mathbf
+e_m\times\mathbf h_m)\cdot\hat x\,dS$ (the injection/extraction fix above) all depend only on
+$(p,m,\omega)$ — not on which excitation is being driven. Compute and cache them **once per port
+per mode per frequency** (`PortMode.overlap_e`, `.overlap_h`, `.self_overlap`); reuse for
+$\mathbf B_p$ (built once per frequency) and for every excitation's $\mathbf g_p$ (one per (port,
+mode) driven in the sweep), and hand the same cached values to Module 7's extraction (§4.3),
+which needs the identical overlaps — `$N_m$` is computed for free from `overlap_e`/`overlap_h`
+(no fresh quadrature: $N_m$ = the same bilinear form `overlap_h`'s own derivation already
+integrates, evaluated at the mode's own DOF vector) and read by `_self_overlap`, `project`, and
+`build_B` alike, so every consumer of $N_m$ sees the identical cached value.
 
 ### 5.3 Excitation convention
 

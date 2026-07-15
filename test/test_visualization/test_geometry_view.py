@@ -13,8 +13,8 @@ import pytest
 from mesh_interface import MeshInterface
 from visualization.geometry_view import (
     PlottingUnavailableError,
-    _substrate_envelope_triangles,
     _triangles_for_tag,
+    _volume_envelope_triangles,
     plot_geometry,
     plot_mesh,
 )
@@ -48,14 +48,55 @@ def test_substrate_envelope_includes_boundary_and_substrate_air_interface():
     interior SUBSTRATE/AIR interface face {1,2,3} (untagged, picked up from
     the SUBSTRATE side) -- tetB=AIR contributes nothing."""
     mesh = _mesh()
-    tris = _substrate_envelope_triangles(mesh)
+    tris = _volume_envelope_triangles(mesh, ("SUBSTRATE",))
     assert tris.shape == (4, 3, 3)
 
 
 def test_substrate_envelope_empty_when_no_substrate_tets():
     mesh = MeshInterface(VERTICES, TETS, np.array(["AIR", "AIR"]), SURFACE_TAGS)
-    tris = _substrate_envelope_triangles(mesh)
+    tris = _volume_envelope_triangles(mesh, ("SUBSTRATE",))
     assert len(tris) == 0
+
+
+def test_lc_envelope_includes_boundary_and_lc_air_interface():
+    """The same envelope logic, generalized to the LC volume group
+    (post-review geometry-viewer fix): tetA relabeled LC behaves exactly
+    like tetA=SUBSTRATE did above -- 3 exterior faces plus the interior
+    LC/AIR interface face, tetB=AIR contributing nothing."""
+    mesh = MeshInterface(VERTICES, TETS, np.array(["LC", "AIR"]), SURFACE_TAGS)
+    tris = _volume_envelope_triangles(mesh, ("LC",))
+    assert tris.shape == (4, 3, 3)
+
+
+def test_combined_group_has_no_notch_at_the_shared_internal_face():
+    """`_volume_envelope_triangles` accepts a multi-tag group (its actual
+    documented contract, generalized from the single-tag SUBSTRATE-only
+    original): querying ("SUBSTRATE", "LC") together must NOT pick up
+    their shared internal face {1,2,3} -- unlike querying ("SUBSTRATE",)
+    alone, which renders that same face as an outer boundary, i.e. a
+    notch. `plot_geometry` itself calls this with single-tag groups
+    (drawing SUBSTRATE and LC as two separately-colored envelopes, the
+    geometry-viewer fix's actual chosen approach -- see its own
+    docstring), not the combined form exercised here, but the combined
+    form is part of this helper's own generalized contract and worth
+    covering directly."""
+    mesh = MeshInterface(VERTICES, TETS, np.array(["SUBSTRATE", "LC"]), SURFACE_TAGS)
+    combined = _volume_envelope_triangles(mesh, ("SUBSTRATE", "LC"))
+    substrate_only = _volume_envelope_triangles(mesh, ("SUBSTRATE",))
+
+    shared_face = frozenset(map(tuple, VERTICES[[1, 2, 3]]))
+
+    def _has_shared_face(tris: np.ndarray) -> bool:
+        return any(frozenset(map(tuple, tri)) == shared_face for tri in tris)
+
+    assert not _has_shared_face(combined)
+    assert _has_shared_face(substrate_only)
+    # tetA+tetB form one contiguous 6-exterior-face block once combined
+    # (each tet's own 3 non-shared faces); SUBSTRATE alone (4: tetA's 3
+    # exterior + the shared face it still claims) is a strict subset of
+    # the combined group's face count, not merely "fewer notches."
+    assert len(combined) == 6
+    assert len(substrate_only) == 4
 
 
 # --- plot_geometry ------------------------------------------------------------

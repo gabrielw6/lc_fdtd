@@ -132,6 +132,36 @@ regardless of mode quality. `solve.system._SYMMETRY_TOL` was tightened back from
 symmetry failure's error message can name which contributing term (`K-k0^2*M` vs `B`) actually
 broke symmetry instead of always blaming a tensor-index bug.
 
+**Per-port axial orientation** (separate later review): `ports`' formulas were derived assuming
+`n_out=-x_hat` (true for PORT_1 only — PORT_2's outward normal is `+x_hat`, geometry-dependent,
+not hardcoded). `PortCrossSection.axial_sign` (`s_p`, derived from the owning tet's centroid
+relative to the port plane, never from a hardcoded `x0==0` test) threads through
+`ports.mode_solver`'s axial/H-field/power quantities (`_h_t_on_triangle`, `_mode_integrals`,
+`_mode_overlaps`, `_raw_overlap`) so `PortMode.h_t()` and the Poynting/`Y_m`-consistency checks
+are physically correct for either port. Checked and confirmed **unneeded** in
+`ports.port_operator.build_B`/`build_g` themselves: `mode.Y` and `overlap_e` are both provably
+`s_p`-invariant (the two `s_p` factors any correct derivation picks up always cancel), and an
+earlier attempt to add an explicit `s_p` to `build_B` was empirically falsified by
+`test/test_extract/test_reciprocity_uniform_line.py` (non-reciprocal, non-passive `|S22|>1`) and
+reverted — see `build_B`'s own docstring for the account of what was tried and rejected.
+
+**Injection/extraction (`N_m`) normalization fix** (separate later review, energy conservation):
+invariant 4 below already specified a "power-based reference-impedance definition `(Yₘ, Nₘ)`"
+threading mode solver → port operator → extractor, but `build_B` was not actually reading `Nₘ` —
+Section 5.1's boxed `B_p`/`g_p` are derived assuming `Nₘ=1`-normalized modes, while
+`ports.mode_solver._normalize` only enforces `Pₘ=1` (a *different*, conjugated bilinear form;
+`Nₘ=2·Pₘ=2` for a lossless mode, not 1 — see `_self_overlap`'s docstring). `extract.project`
+(extraction) already carried the resulting explicit `1/Nₘ` division; `build_B` (which routes that
+same *solved*-field quantity back into the system, i.e. the injection-side counterpart of the
+identical normalization) did not, until this fix — the real cause of a passivity-gate deficit an
+earlier docstring had misattributed to the (also-real, but energy-conserving) trivial-PML
+reflection. `PortMode` now caches `self_overlap` (`Nₘ`, computed once per mode from already-
+available `overlap_e`/`overlap_h`, no fresh quadrature) and `build_B` divides by it; `build_g`
+needs no equivalent correction (its `a_m^{+,inc}` term is a directly-given amplitude, never routed
+through `project`/`1/Nₘ` — see `build_g`'s own docstring for the re-derivation). The passivity gate
+(`|S11|²+|S21|²~=1`, not merely `<=1`) is now a standing test
+(`test/test_extract/test_reciprocity_uniform_line.py`), not just a reciprocity one.
+
 `docs/module3_fem_assembly_equations.md` §1 added three small, purely geometric additions to
 Module 1's contract — barycentric weights returned from `quadrature_tet`, a per-tet volume tag
 accessor, and `pec_edge_dofs()` — already applied to `module1_mesh_interface_equations.md`. If
@@ -188,13 +218,17 @@ crash), so they are encoded as assertions, not left to reviewer vigilance.
 3. **`ε_r` symmetric ⇒ `M`, `K`, `Bₚ` complex-symmetric ⇒ S-matrix symmetric.** One property,
    checked at every layer. Use a **complex-symmetric** factorization (LDLᵀ-type), never a
    Hermitian solver or Cholesky. Assert `‖M − Mᵀ‖ ≈ 0`; `Bₚ` is now assembled symmetric *by
-   construction* (`(Yₘ)² · outer(overlap_e, overlap_e)`, not `Yₘ · outer(overlap_e, overlap_h)`
-   — see the port-aperture-decoupling-review notes in §4 above), so `solve.system.factor` checks
-   this at a tight `1e-6` tolerance; a failure past that is a transposed tensor index and is the
-   proximate cause of a non-reciprocal S.
+   construction* (`(Yₘ)² · outer(overlap_e, overlap_e) / Nₘ`, not `Yₘ · outer(overlap_e,
+   overlap_h)` — see the port-aperture-decoupling-review notes in §4 above; the `/Nₘ` is the
+   injection/extraction normalization fix, also §4), so `solve.system.factor` checks this at a
+   tight `1e-6` tolerance; a failure past that is a transposed tensor index and is the proximate
+   cause of a non-reciprocal S. Dividing by the real-valued-for-lossless scalar `Nₘ` does not
+   affect this symmetry property (still a sum of `scalar · outer(v,v)` terms).
 4. **Ports live in isotropic feed sections** (geometry guarantees it: LC cutout length < line
    length). One **power-based** reference-impedance definition `(Yₘ, Nₘ)` threads the mode
-   solver → port operator → extractor. Do not re-derive `Yₘ` independently in the extractor.
+   solver → port operator → extractor — `PortMode.self_overlap` is `Nₘ`, cached once per mode
+   and read by both `build_B` (injection) and `extract.project`/`biorthogonality` (extraction);
+   do not recompute either `Yₘ` or `Nₘ` independently downstream of `ports.mode_solver`.
 5. **PML and LC are spatially disjoint.** `PMLMaterial` wraps an *isotropic* background and
    returns `Λ·ε_bg`, `Λ·μ_bg`. Never compose `Λ` with the LC tensor.
 6. **Cache the frequency-independent interior once.** Interior `K`, `M` and the cached LC ε

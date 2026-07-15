@@ -10,7 +10,7 @@ dispatch, so the tags need to be the real ones.
     tetB = [4,1,2,3]  AIR       (V=1/3)
 
 tetA and tetB share face {1,2,3} (interior, incidence 2) -- the
-SUBSTRATE/AIR interface `_substrate_envelope_triangles` must pick up from
+SUBSTRATE/AIR interface `_volume_envelope_triangles` must pick up from
 the SUBSTRATE side even though it carries no surface tag, exactly like the
 real substrate/air interface away from the PEC_LINE patch. The other six
 faces are each incident to exactly one tet (boundary, incidence 1).
