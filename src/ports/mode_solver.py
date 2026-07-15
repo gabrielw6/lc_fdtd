@@ -182,14 +182,21 @@ def _h_t_on_triangle(
     gamma: complex,
     omega: float,
 ) -> np.ndarray:
-    """Section 3.8: `h_t = -(j/(omega*mu0)) x_hat x ((1/gamma) grad_t
-    tilde_e_x + gamma e_t)`. With `x_hat x (0,vy,vz) = (0,-vz,vy)`, the
-    (y,z) output components are `(j/(omega*mu0))*Dz, -(j/(omega*mu0))*Dy`."""
+    """Section 3.8: `h_t = -(j/(omega*mu0)) (s_p x_hat) x ((1/gamma) grad_t
+    tilde_e_x + gamma e_t)`, where `s_p = cs.axial_sign` is the port's
+    into-domain axial sign (docs/module4_ports_equations.md's ansatz uses
+    the literal global x_hat for `e_x`'s own basis vector, but the
+    propagation/axial direction implicit in `d/d(zeta) -> -gamma` is
+    `s_p*x_hat`, per Section 3.1's zeta=x (PORT_1, s_p=+1) vs.
+    zeta=L-x (PORT_2, s_p=-1) -- only this cross-product term, not the 2D
+    eigenproblem, depends on it). With `x_hat x (0,vy,vz) = (0,-vz,vy)`,
+    the (y,z) output components are
+    `s_p*(j/(omega*mu0))*Dz, -s_p*(j/(omega*mu0))*Dy`."""
     e_field = _e_t_on_triangle(cs, t, bary, e_edge_dofs)  # (M,2)
     ex_coeffs = ex_tilde_dofs[cs.triangles[t]]  # (3,)
     grad_ex_tilde = ex_coeffs @ cs.grad_t[t]  # (2,)
     D = grad_ex_tilde[None, :] / gamma + gamma * e_field  # (M,2)
-    prefactor = 1j / (omega * _c.mu_0)
+    prefactor = cs.axial_sign * 1j / (omega * _c.mu_0)
     h = np.empty_like(e_field)
     h[:, 0] = prefactor * D[:, 1]
     h[:, 1] = -prefactor * D[:, 0]
@@ -294,10 +301,20 @@ def _mode_integrals(
         abs2 = np.sum(np.abs(e_field) ** 2, axis=1)
         total_abs2 += float(np.sum(weights * abs2))
 
-        x_cross_e = np.stack([-e_field[:, 1], e_field[:, 0]], axis=1)  # x_hat x e_t, (y,z) comps
+        # (s_p x_hat) x e_t, (y,z) comps -- h_field (now s_p-scaled by
+        # _h_t_on_triangle) is being projected onto the SAME axial
+        # direction it was derived with, so this factor must carry the
+        # same cs.axial_sign for Y_m's defining relation h_t=Y_m*(s_p
+        # x_hat x e_t) to hold for either port.
+        x_cross_e = cs.axial_sign * np.stack([-e_field[:, 1], e_field[:, 0]], axis=1)
         Y_num += np.sum(weights * np.einsum("md,md->m", h_field, np.conj(x_cross_e)))
 
-        poynting += np.sum(weights * (e_field[:, 0] * np.conj(h_field[:, 1]) - e_field[:, 1] * np.conj(h_field[:, 0])))
+        # Section 4.1's Poynting power is dotted with the same s_p*x_hat
+        # axial direction; h_field already carries one factor of s_p (from
+        # its own fix), so this dot needs an explicit second one.
+        poynting += cs.axial_sign * np.sum(
+            weights * (e_field[:, 0] * np.conj(h_field[:, 1]) - e_field[:, 1] * np.conj(h_field[:, 0]))
+        )
 
         idx = int(np.argmax(abs2))
         if abs2[idx] > max_abs2:
@@ -364,7 +381,13 @@ def _normalize(
 
 
 def _mode_overlaps(
-    T_tt: np.ndarray, S_tz: np.ndarray, e_edge_dofs: np.ndarray, ex_tilde_dofs: np.ndarray, gamma: complex, omega: float
+    T_tt: np.ndarray,
+    S_tz: np.ndarray,
+    e_edge_dofs: np.ndarray,
+    ex_tilde_dofs: np.ndarray,
+    gamma: complex,
+    omega: float,
+    axial_sign: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Section 5.2's two per-port-per-mode-per-frequency overlaps, over the
     FULL local edge space (Section 5.3-style: no PEC elimination here,
@@ -389,6 +412,15 @@ def _mode_overlaps(
     overlap_e = T_tt @ e_edge_dofs
     prefactor = 1j / (omega * _c.mu_0)
     overlap_h = (prefactor / gamma) * (S_tz @ ex_tilde_dofs) - (prefactor * gamma) * overlap_e
+    # This closed form is derived from `_h_t_on_triangle`'s formula before
+    # its own cs.axial_sign factor -- i.e. it implicitly assumes h_m dotted
+    # with the literal global x_hat. Multiplying by axial_sign here makes
+    # `overlap_h` represent `integral (N_j)_t x h_m^true . x_hat dS` (the
+    # TRUE, s_p-corrected h_m field, still dotted with the fixed global
+    # x_hat, not the port-local axial direction) -- see
+    # ports.port_operator.build_B's own docstring for why B_p's boxed
+    # formula needs an *additional* explicit axial_sign on top of this one.
+    overlap_h = axial_sign * overlap_h
     return overlap_e, overlap_h
 
 
@@ -604,7 +636,7 @@ class PortModeSolver:
                 e_edge_dofs, ex_tilde_dofs, Y = _normalize(cs, e_edge_dofs, ex_tilde_dofs, gamma, omega)
             except PortModeError:
                 continue
-            overlap_e, overlap_h = _mode_overlaps(T_tt, S_tz, e_edge_dofs, ex_tilde_dofs, gamma, omega)
+            overlap_e, overlap_h = _mode_overlaps(T_tt, S_tz, e_edge_dofs, ex_tilde_dofs, gamma, omega, cs.axial_sign)
 
             modes.append(
                 PortMode(
@@ -649,7 +681,13 @@ def _raw_overlap(field_yz: Callable[[np.ndarray], np.ndarray], mode: PortMode) -
         points3d = np.column_stack([np.full(len(points_yz), cs.x0), points_yz])
         field = np.atleast_2d(field_yz(points3d))[:, 1:3]
         h_field = _h_t_on_triangle(cs, t, bary, mode.e_edge_dofs, mode.ex_tilde_vertex_dofs, mode.gamma, mode.omega)
-        cross = field[:, 0] * h_field[:, 1] - field[:, 1] * h_field[:, 0]
+        # h_field already carries one factor of cs.axial_sign (from
+        # _h_t_on_triangle's own fix); this bilinear power-type overlap is
+        # dotted with the port's own axial direction (s_p*x_hat), per
+        # Section 4.3/8.1's ".x_hat" role matching Section 4.1's Poynting
+        # convention (see _mode_integrals' poynting term) -- so it needs a
+        # second, explicit factor here.
+        cross = cs.axial_sign * (field[:, 0] * h_field[:, 1] - field[:, 1] * h_field[:, 0])
         total += np.sum(weights * cross)
     return complex(total)
 

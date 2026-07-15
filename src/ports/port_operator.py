@@ -59,6 +59,27 @@ def build_B(port_modes: dict[str, list[PortMode]], mesh: MeshInterface, omega: f
     `PortMode` (Section 5.2's cache) for any other consumer (e.g. Module 7
     extraction) that needs the un-substituted quantity; this function no
     longer reads it.
+
+    **Per-port axial sign -- checked, no correction needed here (per-port
+    axial-orientation review).** PORT_1's outward normal is `-x_hat`
+    (matching Section 5.1's derivation directly) but PORT_2's is `+x_hat`
+    (`n_out=-s_p*x_hat` generally, `s_p=cs.axial_sign`). Substituting the
+    axial-direction-consistent modal-admittance relation
+    `h_m=Y_m*(s_p*x_hat x e_m)` (the form `ports.mode_solver._h_t_on_triangle`
+    and `_mode_integrals` are threaded with) into the surface term's own
+    `n_out=-s_p*x_hat` gives *two* factors of `s_p`, which cancel exactly
+    (`s_p**2=1`) -- the same cancellation that already makes `mode.Y` itself
+    port-orientation-invariant (see `_mode_integrals`'s `x_cross_e`
+    comment). An earlier version of this function multiplied by an
+    additional bare `cs.axial_sign` on the theory that one factor survived
+    the substitution; that was checked against the two-port
+    reciprocity/passivity gate (`test/test_extract/test_reciprocity_uniform_line.py`)
+    on a box-mode-safe (single-mode) port aperture and empirically confirmed
+    **wrong** -- it produced a non-reciprocal, non-passive (`|S22|>1`)
+    result, while omitting it (the form actually assembled below) gives a
+    clean symmetric, passive S-matrix. Reverted; kept as a documented
+    negative result per this doc series' policy of recording what was tried
+    and rejected, not just what shipped.
     """
     n = mesh.n_edges
     rows: list[int] = []
@@ -93,7 +114,14 @@ def build_g(
 ) -> np.ndarray:
     """Section 5.1's boxed `g_p`, summed over the driven `(port, mode)`
     pairs in `excitation` (Section 5.3: `mode` is 1-indexed, matching "the
-    dominant mode (n=1)" convention -- `modes[0]` is mode 1)."""
+    dominant mode (n=1)" convention -- `modes[0]` is mode 1).
+
+    **No `axial_sign` correction needed here (checked, per-port
+    axial-orientation review) -- same reasoning as `build_B`'s own
+    docstring**: substituting `h_m=Y_m*(s_p*x_hat x e_m)` into the surface
+    term's `n_out=-s_p*x_hat` reduces to `Y_m*overlap_e` with the two
+    factors of `s_p` cancelling exactly. Confirmed empirically against the
+    two-port reciprocity/passivity gate."""
     n = mesh.n_edges
     g = np.zeros(n, dtype=complex)
 

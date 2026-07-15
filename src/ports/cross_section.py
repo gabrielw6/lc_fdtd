@@ -33,6 +33,14 @@ class PortCrossSection:
 
     port_tag: str
     x0: float  # the port plane's fixed x coordinate (Section 2.1)
+    axial_sign: float  # +1 if the domain interior sits at x>x0 (outward normal -x_hat,
+    # e.g. PORT_1 at x=0), -1 if the interior sits at x<x0 (outward normal +x_hat, e.g.
+    # PORT_2 at x=L) -- see docs/module4_ports_equations.md Section 3.1's notation
+    # ("hat x = the global length axis") vs. Section 5.1's n_out=-x_hat, which the
+    # document derives for PORT_1 only. This is the s_p correction factor threading
+    # into every axial (H-field/power/operator) quantity in mode_solver.py and
+    # port_operator.py -- the 2D transverse eigenproblem itself (S_tt, S_zz, T_tt,
+    # T_zt, S_tz, gamma^2, e_t) never uses an axial direction and so never reads this.
     yz: np.ndarray  # (Nv,2) local-vertex (y,z) coordinates
     global_vertex_ids: np.ndarray  # (Nv,) int -> 3D global vertex index
     triangles: np.ndarray  # (Nt,3) local vertex indices, oriented (area>0)
@@ -160,6 +168,13 @@ def extract_cross_section(mesh: MeshInterface, port_tag: str) -> PortCrossSectio
             f"{float(np.abs(x0_arr - x0).max())!r}) -- not a valid port cross-section"
         )
 
+    # axial_sign (s_p): determined from the mesh geometry, not from a
+    # hardcoded x0==0 test -- the owning tet's centroid x tells which side
+    # of the port plane the domain interior sits on.
+    tet0, _local_face0 = faces[0]
+    centroid_x0 = float(mesh.vertices[mesh.tets[tet0]][:, 0].mean())
+    axial_sign = 1.0 if centroid_x0 > x0 else -1.0
+
     global_edge_ids = np.array(sorted(edge3d_set), dtype=np.int64)
     eid3d_to_local = {int(e): i for i, e in enumerate(global_edge_ids)}
     tri_edges_local = np.array(
@@ -191,6 +206,7 @@ def extract_cross_section(mesh: MeshInterface, port_tag: str) -> PortCrossSectio
     return PortCrossSection(
         port_tag=port_tag,
         x0=x0,
+        axial_sign=axial_sign,
         yz=yz_arr,
         global_vertex_ids=global_vertex_ids_arr,
         triangles=triangles_arr,
