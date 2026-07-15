@@ -34,7 +34,7 @@ def test_parser_accepts_minimal_valid_args():
     args = parser.parse_args(_REQUIRED_GEOM_ARGS)
     assert args.w == pytest.approx(0.002)
     assert args.lc == "none"
-    assert args.n_modes == 2  # default
+    assert args.n_modes == 1  # default -- physically correct for a plain isotropic line
     assert args.f_stop is None
 
 
@@ -316,3 +316,201 @@ def test_main_show_geometry_alongside_a_full_sweep_still_writes_csv(tmp_path, ca
     assert geometry_path.exists() and geometry_path.stat().st_size > 0
     out = capsys.readouterr().out
     assert out.strip().split("\n")[0].startswith("frequency_Hz")
+
+
+# --- port aperture (--w-port/--h-port) ---
+
+
+def test_parser_accepts_w_port_h_port():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS + ["--w-port", "0.006", "--h-port", "0.005"])
+    assert args.w_port == pytest.approx(0.006)
+    assert args.h_port == pytest.approx(0.005)
+
+
+def test_parser_w_port_h_port_default_to_none():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS)
+    assert args.w_port is None
+    assert args.h_port is None
+
+
+def test_main_plumbs_w_port_h_port_into_geometry_params(monkeypatch):
+    """Confirms the CLI arg -> GeometryParams wiring directly (no mesh
+    build needed): patch the `GeometryBuilder` name `cli.main` actually
+    resolves (bound into `cli`'s own namespace at import time, so patching
+    the `geometry_builder` package's attribute would not be seen here) to
+    capture the params it was called with, then let main() fail
+    immediately afterward -- cheap and doesn't need Gmsh."""
+    import cli as cli_module
+
+    captured = {}
+
+    class _FakeBuilder:
+        def build(self, params):
+            captured["params"] = params
+            raise RuntimeError("stop here -- only the plumbing is under test")
+
+    monkeypatch.setattr(cli_module, "GeometryBuilder", _FakeBuilder)
+    with pytest.raises(RuntimeError, match="stop here"):
+        main(_REQUIRED_GEOM_ARGS + ["--w-port", "0.006", "--h-port", "0.005", "--quiet"])
+    assert captured["params"].W_port == pytest.approx(0.006)
+    assert captured["params"].H_port == pytest.approx(0.005)
+
+
+def test_main_reports_clean_error_when_w_port_given_without_h_port():
+    exit_code = main(_REQUIRED_GEOM_ARGS + ["--w-port", "0.006", "--quiet"])
+    assert exit_code == 1
+
+
+def test_main_restricted_aperture_end_to_end(capsys):
+    """A restricted-aperture end-to-end run at this file's original
+    W_sub=10mm/h_sub=2mm/25 GHz geometry (independent of the current
+    examples/isotropic_microstrip.py numbers, which since moved to a
+    thinner K-band-valid substrate -- see test_main_k_band_single_mode_
+    end_to_end below for a test that mirrors that example directly)."""
+    pytest.importorskip("gmsh")
+    exit_code = main(
+        [
+            "--w", "0.002", "--L", "0.020", "--L-lc", "0.008", "--W-lc", "0.004",
+            "--h-sub", "0.002", "--W-sub", "0.010", "--eps-r-substrate", "3.0",
+            "--mesh-density", "6", "--pml-r0", "1.0", "--pml-kappa-max", "1.0",
+            "--f-start", "25e9", "--f-points", "1", "--n-modes", "1",
+            "--lc", "none", "--w-port", "0.006", "--h-port", "0.006", "--quiet",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    lines = out.strip().split("\n")
+    assert len(lines) == 2
+    assert "np.float64" not in out
+
+
+def test_main_k_band_single_mode_end_to_end(capsys):
+    """Mirrors examples/isotropic_microstrip.py exactly: a thin,
+    single-mode-valid substrate with a box-mode-safe port aperture
+    (lambda_min/2=8.66mm at 10 GHz/eps_r=3, comfortably above the 8mm x
+    6mm aperture) and the CLI's own default `--n-modes 1` -- the
+    single-mode-tolerant mode-counting fix (`PortModeSolver.solve`'s
+    n_modes/n_desired split) is what makes `--n-modes 1` succeed here
+    instead of hard-failing on "only 1 mode found, requested 3"."""
+    pytest.importorskip("gmsh")
+    exit_code = main(
+        [
+            "--w", "0.00334", "--L", "0.020", "--L-lc", "0.008", "--W-lc", "0.004",
+            "--h-sub", "0.0015", "--W-sub", "0.010", "--eps-r-substrate", "3.0",
+            "--mesh-density", "10", "--pml-r0", "1.0", "--pml-kappa-max", "1.0",
+            "--f-start", "10e9", "--f-points", "1",
+            "--lc", "none", "--w-port", "0.008", "--h-port", "0.006", "--quiet",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    lines = out.strip().split("\n")
+    assert len(lines) == 2
+    assert "np.float64" not in out
+
+
+# --- field visualization (--plot-port-field / --plot-field-slice) ---
+
+_K_BAND_ARGS = [
+    "--w", "0.00334", "--L", "0.020", "--L-lc", "0.008", "--W-lc", "0.004",
+    "--h-sub", "0.0015", "--W-sub", "0.010", "--eps-r-substrate", "3.0",
+    "--mesh-density", "10", "--pml-r0", "1.0", "--pml-kappa-max", "1.0",
+    "--f-start", "10e9", "--f-points", "1",
+    "--lc", "none", "--w-port", "0.008", "--h-port", "0.006", "--quiet",
+]
+
+
+def test_parser_accepts_plot_port_field_bare_and_with_tag():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS + ["--plot-port-field"])
+    assert args.plot_port_field == ["__ALL__"]
+
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS + ["--plot-port-field", "PORT_1", "--plot-port-field", "PORT_2"])
+    assert args.plot_port_field == ["PORT_1", "PORT_2"]
+
+
+def test_parser_plot_port_field_defaults_to_none():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS)
+    assert args.plot_port_field is None
+    assert args.port_field_style == "mag"
+    assert args.port_field_component == "E"
+
+
+def test_parser_accepts_plot_field_slice():
+    parser = build_arg_parser()
+    args = parser.parse_args(_REQUIRED_GEOM_ARGS + ["--plot-field-slice", "x=0.01"])
+    assert args.plot_field_slice == ("x", pytest.approx(0.01))
+    assert args.slice_grid == 120
+    assert args.slice_field == "E"
+
+
+def test_parser_rejects_malformed_plot_field_slice():
+    parser = build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(_REQUIRED_GEOM_ARGS + ["--plot-field-slice", "bogus"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(_REQUIRED_GEOM_ARGS + ["--plot-field-slice", "q=0.01"])
+
+
+def test_main_plot_port_field_unknown_port_reports_clean_error():
+    exit_code = main(_K_BAND_ARGS + ["--plot-port-field", "PORT_99"])
+    assert exit_code == 1
+
+
+def test_main_slice_excitation_unknown_port_reports_clean_error():
+    exit_code = main(_K_BAND_ARGS + ["--plot-field-slice", "x=0.01", "--slice-excitation", "PORT_99"])
+    assert exit_code == 1
+
+
+def test_main_plot_port_field_all_ports_end_to_end(tmp_path, capsys):
+    pytest.importorskip("gmsh")
+    out_path = tmp_path / "port_field.png"
+    exit_code = main(
+        _K_BAND_ARGS + ["--plot-port-field", "--port-field-style", "quiver", "--port-field-output", str(out_path)]
+    )
+    assert exit_code == 0
+    assert out_path.exists() and out_path.stat().st_size > 0
+    out = capsys.readouterr().out
+    assert out.strip().split("\n")[0].startswith("frequency_Hz")
+
+
+def test_main_plot_field_slice_end_to_end(tmp_path, capsys):
+    pytest.importorskip("gmsh")
+    out_path = tmp_path / "slice.png"
+    exit_code = main(
+        _K_BAND_ARGS
+        + [
+            "--plot-field-slice", "x=0.01", "--slice-grid", "24", "--slice-excitation", "PORT_1",
+            "--field-slice-output", str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    assert out_path.exists() and out_path.stat().st_size > 0
+    out = capsys.readouterr().out
+    assert out.strip().split("\n")[0].startswith("frequency_Hz")
+
+
+def test_main_plot_port_field_and_field_slice_together(tmp_path):
+    """Both new features combined in a single invocation, alongside the
+    pre-existing --show-geometry/--plot -- a non-regression check that
+    they don't interfere with each other or with the existing flags."""
+    pytest.importorskip("gmsh")
+    port_out = tmp_path / "port_field.png"
+    slice_out = tmp_path / "slice.png"
+    geom_out = tmp_path / "geometry.png"
+    plot_out = tmp_path / "splot.png"
+    exit_code = main(
+        _K_BAND_ARGS
+        + [
+            "--geometry-output", str(geom_out),
+            "--plot-output", str(plot_out),
+            "--plot-port-field", "--port-field-output", str(port_out),
+            "--plot-field-slice", "x=0.01", "--slice-grid", "20", "--field-slice-output", str(slice_out),
+        ]
+    )
+    assert exit_code == 0
+    for path in (port_out, slice_out, geom_out, plot_out):
+        assert path.exists() and path.stat().st_size > 0

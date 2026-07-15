@@ -128,6 +128,23 @@ symmetry). $\mathbf A_{ff}$ therefore inherits complex symmetry
 Hermitian solver). The correct factorization is a complex-symmetric sparse direct solve (e.g. an
 $LDL^{T}$-type factorization, not Cholesky, not a Hermitian $LDL^{H}$).
 
+**Update (post-review): $\mathbf B_p$'s symmetry needed a construction fix, not just a proof.**
+Module 4 §5.1's original formula, $B_{ij}=-j\omega\mu_0\sum_m Y_m\cdot\text{overlap}_e[i]\cdot
+\text{overlap}_h[j]$, is symmetric only via the modal-admittance identity
+$\mathbf h_m=Y_m\,\hat x\times\mathbf e_m$ (which gives $\text{overlap}_h[j]=Y_m\cdot
+\text{overlap}_e[j]$ *analytically*) — that identity holds to within the discrete field
+reconstruction's own error, not exactly, and a marginal (near-degenerate, coarsely-resolved)
+mode was confirmed to make the assembled $\mathbf B_p$ asymmetric by up to ~130% relative,
+tripping this section's factorization check on an otherwise-fine system. `ports.port_operator.build_B`
+now substitutes the identity directly into the formula, assembling
+$B_{ij}=-j\omega\mu_0\sum_m(Y_m)^2\cdot\text{overlap}_e[i]\cdot\text{overlap}_e[j]$ instead —
+every term is `(scalar)*outer(v,v)`, symmetric in the literal matrix for any mode quality, not
+just analytically. `solve.system.factor`'s symmetry tolerance was tightened back from an earlier
+generous `0.3` to `1e-6` accordingly (see that function's own docstring), and it accepts an
+optional `components` dict so a symmetry failure's error message can name which contributing
+term (the $\mathbf K-k_0^2\mathbf M$ block vs. $\mathbf B_p$) actually broke symmetry, rather than
+always blaming a transposed tensor index.
+
 ### 5.2 Solver library guidance
 
 Preferred: a solver with an explicit complex-symmetric mode (e.g. Intel MKL PARDISO, or MUMPS'
@@ -176,7 +193,17 @@ point before tracking takes over for the rest of the sweep.
 
 1. Request a modest oversupply of candidates from Module 4's eigensolve (e.g.
    $n_{\text{modes}}+2$ to $+3$, not just $n_{\text{modes}}$) — tracking needs spare candidates
-   to choose among, not just the exact count wanted.
+   to choose among, not just the exact count wanted. **Update, single-mode-tolerant mode
+   counting (post-review)**: this oversupply is a *desired* count, not a required one. A
+   correctly-sized port aperture (Module 0 §1.4/Module 4's port-aperture decoupling) is often
+   genuinely single-mode — only the quasi-TEM mode propagates, and every higher candidate is
+   evanescent/un-power-normalizable by physics, not by a solver defect — so requiring the full
+   oversupply to exist would make a physically single-mode port fail to run at all.
+   `ports.mode_solver.PortModeSolver.solve` takes `n_modes` (the true required minimum — this
+   step's own $n_{\text{modes}}$, never relaxed) and `n_desired` (the oversupply above) as
+   separate parameters: it raises only if fewer than `n_modes` valid candidates are found, and
+   otherwise returns however many of the `n_desired` pool it actually has (silently fewer, when
+   that's all there is) for the tracker below to select from.
 2. Apply Module 4 §3.6's physical-bounds filter to discard numerically spurious solutions.
 3. For each of the $n_{\text{modes}}$ previously-tracked modes (from step $k-1$), compute a
    similarity score against every surviving candidate at step $k$:
@@ -308,7 +335,11 @@ scattered power, read out by Module 7.
 def build_restriction(pec_dofs: set[int], n_edges: int) -> sparse matrix   # R, cached once
 def reduce_system(A: sparse, b: array, R: sparse) -> (A_ff: sparse, b_f: array)
 def recover_solution(a_f: array, R: sparse) -> array                        # a = R^T a_f
-def factor(A_ff: sparse) -> Factorization                                   # complex-symmetric
+def factor(A_ff: sparse, *, components: dict[str, sparse] = None) -> Factorization   # complex-symmetric;
+                                                                              # components: optional named
+                                                                              # terms summing to A_ff, used
+                                                                              # only to localize a symmetry
+                                                                              # failure's message (post-review)
 def solve_with_factorization(fact: Factorization, b_f: array) -> array
 
 # solve.sweep

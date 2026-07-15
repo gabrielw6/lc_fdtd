@@ -10,18 +10,16 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import SuperLU, splu
 
-_SYMMETRY_TOL = 0.3  # see factor()'s docstring: loose enough to tolerate
-# Module 4's own documented B_p asymmetry (Section 5.1's honesty flag),
-# tight enough to still catch an outright transposed-tensor-index bug
-# (K_int/M_int alone are exactly symmetric to ~1e-9; a real bug in those
-# would not hide under this). Empirically, the actual residual scales with
-# n_modes and with how marginal a non-dominant tracked mode is (Module 4's
-# known mode-selection limitation): observed ~0.08% at n_modes=1 on one
-# config, ~15% at n_modes=2 on another once a lower-quality second mode
-# contributes to B_p's sum. 0.3 is generous on purpose, not tuned to make
-# one specific run pass -- a genuinely broken tensor index produces a
-# far larger, qualitatively different-looking residual (comparable to the
-# matrix's own scale), not a borderline percentage.
+_SYMMETRY_TOL = 1e-6  # see factor()'s docstring: tightened back down (was
+# 0.3) now that `ports.port_operator.build_B` assembles B_p symmetric *by
+# construction* (Y_m**2 * outer(overlap_e, overlap_e), not
+# Y_m * outer(overlap_e, overlap_h) -- the latter was only symmetric via a
+# modal-admittance identity that holds analytically, not to floating-point
+# precision, and was confirmed to produce up to ~130% relative asymmetry
+# for a marginal mode). K_int/M_int (Module 3) are exactly symmetric to
+# ~1e-9 and B_p is now exactly symmetric to machine precision, so 1e-6 is
+# tight enough to catch a genuine transposed-tensor-index bug while still
+# tolerating ordinary floating-point roundoff in the assembly/reduction.
 _PIVOT_TOL = 1e-12
 
 
@@ -33,8 +31,10 @@ class SolveSingularityError(RuntimeError):
 
 class SystemSymmetryError(RuntimeError):
     """Raised when the reduced system fails to be complex-symmetric
-    (CLAUDE.md invariant 3) -- a failure here is a transposed tensor index
-    upstream (Module 2/3/4), not a caller mistake."""
+    (CLAUDE.md invariant 3) -- likely a transposed tensor index upstream
+    (Module 2/3/4), not a caller mistake, but see `factor`'s `components`
+    parameter for a diagnostic that names which contributing term (K/M vs
+    B) actually broke symmetry rather than assuming which one."""
 
 
 def build_restriction(pec_dofs: set[int], n_edges: int) -> sp.csr_matrix:
@@ -83,32 +83,43 @@ class Factorization:
         return self._lu.solve(b_f)
 
 
-def factor(A_ff: sp.spmatrix) -> Factorization:
+def factor(A_ff: sp.spmatrix, *, components: dict[str, sp.spmatrix] | None = None) -> Factorization:
     """Section 5.1's complex-symmetric invariant, checked (not assumed);
     Section 5.2's factorization; Section 5.4's nonsingularity check.
 
-    The symmetry check uses `_SYMMETRY_TOL=0.3`, not machine precision:
-    `K_int`/`M_int` (Module 3) are exactly complex-symmetric, but `B_p`
-    (Module 4 Section 5.1) carries its own documented honesty flag -- its
-    symmetry is not asserted to be exact, only "not wildly broken" (Module
-    4's own test suite checks finiteness, not a tight bound, for exactly
-    this reason). Requiring machine-precision symmetry here would make
-    every sweep with active ports fail on Module 4's already-known open
-    item rather than on an actual new bug. The residual scales with
-    `n_modes` and with how marginal a non-dominant tracked mode is (see
-    `_SYMMETRY_TOL`'s own comment for the observed range); a genuinely
-    transposed tensor index would not hide under even this generous
-    tolerance -- it produces a residual comparable to the matrix's own
-    scale, not a borderline percentage."""
+    `components` (optional): the same-shape, already-reduced pieces that
+    sum to `A_ff` (e.g. `{"K-k0^2*M": ..., "B (port operator)": ...}`) --
+    used *only* to build a more useful diagnostic if the symmetry check
+    below fails, by reporting each piece's own residual so the message
+    names which term actually broke symmetry instead of asserting it must
+    be a transposed tensor index. Omit it and `factor` still works exactly
+    as before, just with a less specific error message on failure.
+
+    `_SYMMETRY_TOL=1e-6` (tightened from an earlier 0.3): `K_int`/`M_int`
+    (Module 3) are exactly complex-symmetric to ~1e-9, and `B_p`
+    (`ports.port_operator.build_B`) is now assembled symmetric *by
+    construction* (see that function's docstring) rather than relying on
+    an identity that only holds analytically -- so ordinary floating-point
+    roundoff is the only thing this tolerance needs to absorb, and a
+    genuine transposed-tensor-index bug still produces a residual many
+    orders of magnitude larger than this, not a borderline percentage."""
     A_csc = A_ff.tocsc()
 
     residual = float(np.abs(A_csc - A_csc.T).max()) if A_csc.nnz else 0.0
     scale = max(1.0, float(np.abs(A_csc).max()) if A_csc.nnz else 1.0)
     if residual > _SYMMETRY_TOL * scale:
+        detail = ""
+        if components:
+            per_term = []
+            for name, term in components.items():
+                term_csc = term.tocsc()
+                term_residual = float(np.abs(term_csc - term_csc.T).max()) if term_csc.nnz else 0.0
+                per_term.append(f"{name}: max|term-term^T|={term_residual!r}")
+            detail = " [" + "; ".join(per_term) + "]"
         raise SystemSymmetryError(
-            f"A_ff is not complex-symmetric (max |A-A^T|={residual!r}, scale {scale!r}) -- "
-            "Section 5.1's invariant failed; a transposed tensor index upstream, not a "
-            "solver-choice issue"
+            f"A_ff is not complex-symmetric (max |A-A^T|={residual!r}, scale {scale!r}){detail} -- "
+            "Section 5.1's invariant failed; check the per-term residuals above (when given) to "
+            "localize which contributing term broke symmetry"
         )
 
     try:

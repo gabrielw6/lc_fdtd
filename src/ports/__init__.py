@@ -17,6 +17,7 @@ from .mode_solver import (
     project,
 )
 from .port_operator import PortOperatorError, build_B, build_g, deembed
+from .sizing import check_port_sizing, check_port_sizing_for_cross_section
 
 __all__ = [
     "PortModeSolver",
@@ -33,4 +34,6 @@ __all__ = [
     "PortCrossSection",
     "extract_cross_section",
     "CrossSectionError",
+    "check_port_sizing",
+    "check_port_sizing_for_cross_section",
 ]

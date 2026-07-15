@@ -273,6 +273,42 @@ normalization) hit the same "helps here, breaks there" pattern as the field-patt
 above and was likewise reverted rather than kept as a false fix. The dominant mode remains
 reliable; non-dominant retained modes are not guaranteed clean.
 
+**Second mitigation, added post-review: decouple the port aperture from the domain
+cross-section (Module 0 §1.4).** Rather than trying to discriminate box modes from the
+quasi-TEM mode after the fact, shrink the PMC-walled enclosure itself so its box-mode cutoff
+rises above the band of interest — standard wave-port practice (size the aperture below
+$\lambda/2$). Module 0 now accepts an optional `W_port, H_port` smaller than the full
+cross-section; the region outside it becomes a PEC "cap" (folded into Module 1's `PEC` tag
+aggregate), which makes the aperture's own side/top walls PEC in this module's eigenproblem for
+free — **no change to `cross_section.py`, `mode_solver.py`, or the eigenproblem itself**;
+`boundary_faces('PORT_p')` and `pec_edge_dofs()` already return the right thing once Module 0
+tags the smaller aperture. `ports.sizing.check_port_sizing` (new, informational-only) flags an
+aperture that's still too large (box-mode risk) or too small (fringing-field clipping risk) at
+the sweep's own frequency band, without gating anything. This reduces but does **not**
+eliminate this section's limitation on its own: a restricted aperture avoids the box-mode risk
+by construction only when it's actually sized below $\lambda/2$, which the mesh must also be
+fine enough to resolve — an aperture sized correctly on paper but under-resolved by the mesh
+can fail to find enough well-conditioned modes at all (`PortModeError`, a distinct failure mode
+from mis-selecting a box mode).
+
+**Third mitigation, added post-review: stop requiring the oversupply itself to exist
+(single-mode-tolerant mode counting).** A correctly-sized aperture (previous paragraph) is often
+genuinely single-mode by physics — only the quasi-TEM mode propagates, and every higher
+candidate is evanescent or fails power-normalization ($\tfrac12\mathrm{Re}(Y_m)\int|\mathbf
+e_t|^2\,dS\le0$) not due to a solver defect but because there is no second physical mode to
+find. `solve()`'s original contract conflated "how many modes are required" with "how many to
+try to return," both pinned to the single `n_modes` argument, so a single-mode port failed
+outright ("only 1 power-normalizable mode found, requested 4"). `solve(port_tag, omega,
+n_modes, n_desired=None)` now separates them: `n_modes` is the true required minimum (raise
+`PortModeError` only if fewer are found); `n_desired` (default `n_modes`, preserving the
+original behavior when omitted) is how many to *try* to collect, for `solve.run_sweep`'s
+tracking oversupply. `run_sweep` passes its own `n_modes` as the required minimum and
+`n_modes+2` as `n_desired` — a physically single-mode port with `n_modes=1` now runs
+successfully instead of needing an inflated `n_modes` just to avoid the old hard failure.
+
+The frequency-to-frequency tracking approach below remains the principled fix for whatever
+box-mode risk remains after sizing.
+
 **Principled path forward, deferred to Module 6**: the standard resolution for this exact
 problem (used in mode-tracking waveguide-port solvers generally) is **continuity across the
 frequency sweep, not an absolute per-frequency criterion**. At the sweep's starting frequency
@@ -405,6 +441,24 @@ sign tracked through any single derivation.** $B_{p,ij}$ is manifestly symmetric
 to the ordering of the two integral factors — a useful structural check independent of the
 overall-sign question.
 
+**Update, post-review: assemble the symmetric-by-construction form, not the boxed formula
+literally.** The boxed $B_{p,ij}$ above is symmetric only via $\mathbf h_m=Y_m\,\hat
+x\times\mathbf e_m$ (§4.1), which gives $\int_{S_p}(\mathbf W_j)_t\times\mathbf h_m\cdot\hat
+x\,dS = Y_m\int_{S_p}\mathbf W_j\cdot\mathbf e_m\,dS$ *analytically* — that identity holds to
+within the discrete field reconstruction's own error, not exactly, and implementation confirmed
+a marginal mode can make the literally-assembled $B_{p,ij}$ asymmetric by up to ~130% relative,
+which is large enough to trip Module 6 §5's complex-symmetric factorization check on an
+otherwise-fine system. Substituting the identity directly into the boxed formula gives an
+equal-when-the-identity-holds form that is symmetric *unconditionally*:
+
+$$B_{p,ij} = -j\omega\mu_0\sum_m (Y_m)^2\left(\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS\right)\left(\int_{S_p}\mathbf W_j\cdot\mathbf e_m\,dS\right)$$
+
+Every summand is `(scalar)*outer(v,v)` for `v = ` the $\mathbf e_m$-overlap vector — symmetric
+in the literal matrix regardless of mode quality, not just in principle. `ports.port_operator.build_B`
+assembles this form; the un-substituted $\int_{S_p}(\mathbf W_j)_t\times\mathbf h_m\cdot\hat
+x\,dS$ overlap (`overlap_h`, §5.2) is still computed and cached in case another consumer (e.g.
+Module 7) needs the un-substituted quantity, but `build_B` itself no longer reads it.
+
 ### 5.2 Caching
 
 The surface overlap integrals $\int_{S_p}\mathbf W_i\cdot\mathbf e_m\,dS$ and
@@ -494,14 +548,21 @@ a per-mode analytic phase/attenuation correction, applied in Module 7.
   set is known in advance. **Confirmed on the real microstrip geometry.**
 - **$\ge 2$ modes captured**, with the second mode's field pattern visually/numerically
   distinct from the dominant mode (not a numerical duplicate) — guards against a degenerate or
-  under-resolved eigensolve silently returning the same mode twice.
+  under-resolved eigensolve silently returning the same mode twice. This applies when `n_modes`
+  (the *required* minimum, post-review's single-mode-tolerant counting) is $\ge2$; a port whose
+  aperture is deliberately sized for single-mode operation (`n_modes=1`) is not expected to
+  produce a second mode at all, and `solve`'s `n_desired` oversupply returning fewer than
+  requested in that case is the correct, non-error outcome, not a test failure to chase.
 - **Open validation item, not yet resolvable in isolation**: §3.7's box-mode mode-selection
   limitation has no test that can pass reliably within this module alone, since discriminating
   the quasi-TEM mode from a near-degenerate box mode by any *per-frequency* criterion was shown
   not to generalize across mesh resolutions. The only currently-known reliable resolution
   (frequency-to-frequency mode tracking, §3.7) requires Module 6 to exist. Track this as a known
   gap rather than closing it with an unconvincing single-frequency test.
-- **$B_p$ symmetry** (§5.1): structural check independent of the overall sign question.
+- **$B_p$ symmetry** (§5.1): structural check independent of the overall sign question. Now
+  exact (to machine precision, any mode quality), not merely approximate, since `build_B`
+  assembles the symmetric-by-construction form (§5.1's post-review update) rather than the
+  boxed formula literally.
 - **End-to-end sign resolution**: since §3.6 and §5.1 both carry explicit honesty flags, the
   real acceptance criterion for this module is the top-level doc's Phase 1 gate — reciprocity
   and $|S_{11}|^2+|S_{21}|^2=1$ on the full assembled system (Modules 3+4+6) for a uniform
@@ -515,7 +576,10 @@ a per-mode analytic phase/attenuation correction, applied in Module 7.
 ```
 # ports.mode_solver
 class PortModeSolver:
-    def solve(port_tag: str, omega: float, n_modes: int = 2) -> list[PortMode]
+    def solve(port_tag: str, omega: float, n_modes: int = 2, n_desired: int = None) -> list[PortMode]
+        # n_modes: required minimum (raises PortModeError if fewer found)
+        # n_desired: desired count to try to collect, default n_modes (post-review,
+        #            single-mode-tolerant mode counting -- §3.7's third mitigation)
 
 class PortMode:
     gamma: complex             # propagation constant
@@ -526,6 +590,10 @@ class PortMode:
 def build_B(port_modes: dict[str, list[PortMode]], mesh, omega) -> sparse matrix   # global-DOF sized, low-rank/local
 def build_g(port_modes, excitation: dict[(str,int), complex], mesh, omega) -> vector
 def deembed(S: array, port_modes, offsets: dict[str, float]) -> array
+
+# ports.sizing (added post-review, §3.7's box-mode mitigation) -- informational only, never raises
+def check_port_sizing(W_port, H_port, h_sub, w, eps_r_max, f_max) -> list[str]   # warning messages
+def check_port_sizing_for_cross_section(cs: PortCrossSection, materials, f_max) -> list[str]
 ```
 
 Module 6 calls `build_B` once per frequency (alongside the cached interior $\mathbf K,\mathbf

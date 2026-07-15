@@ -33,8 +33,14 @@ LOCAL_FACE_EDGES: tuple[tuple[int, ...], ...] = tuple(
 )
 
 # Section 5.3: tag resolution -- Module 0's concrete surface-tag names
-# aggregated under Module 1's generic vocabulary.
-_PEC_TAGS: tuple[str, ...] = ("PEC_GROUND", "PEC_LINE")
+# aggregated under Module 1's generic vocabulary. PORT_CAP (Section 5.3
+# addendum, port-aperture decoupling) is the PEC idealization of the
+# end-plane region outside a sub-full-size port aperture -- folding it into
+# the same PEC bucket as PEC_GROUND/PEC_LINE is what makes the aperture's
+# own side/top walls PEC in Module 4's 2D port eigenproblem for free, via
+# the existing "2D edge is PEC iff it borders a PEC-tagged 3D face" rule,
+# with no new Module 4 code.
+_PEC_TAGS: tuple[str, ...] = ("PEC_GROUND", "PEC_LINE", "PORT_CAP")
 _PML_OUTER_TAGS: tuple[str, ...] = ("PML_OUTER_PEC",)
 
 

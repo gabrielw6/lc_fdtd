@@ -139,6 +139,9 @@ $$y_{lc0} = \frac{W_{\text{sub}} - W_{\text{lc}}}{2}, \qquad y_{lc1} = \frac{W_{
 
 $$y_0^{\text{trace}} = \frac{W_{\text{sub}} - w}{2}, \qquad y_1^{\text{trace}} = \frac{W_{\text{sub}} + w}{2}$$
 
+$$y_0^{\text{port}} = \frac{W_{\text{sub}} - W_{\text{port}}}{2}, \qquad y_1^{\text{port}} = \frac{W_{\text{sub}} + W_{\text{port}}}{2}
+\qquad \text{(transverse port-aperture bounds, centered — §1.4)}$$
+
 $$z_{\text{gnd}} = 0,\quad z_{\text{iface}} = h_{\text{sub}},\quad z_{\text{air,top}} = h_{\text{sub}}+h_{\text{air}},\quad z_{\text{pml,top}} = h_{\text{sub}}+h_{\text{air}}+h_{\text{pml}}$$
 
 **Parameter validation (run before any CAD call)**: $w>0$; $0 < L_{\text{lc}} < L$ (strict, so a
@@ -147,8 +150,49 @@ nonzero substrate margin exists at both ports — see §6); $0 < W_{\text{lc}} <
 sit within the cavity's footprint — see §0 point 4; treat as a hard check, not a silent
 allowance, since a violation means the LC isn't actually under the full line and the intended
 tuning mechanism is only partially engaged); $h_{\text{sub}}, h_{\text{air}}, h_{\text{pml}} > 0$;
-$\varepsilon_{r,\text{sub}} \ge 1$. Fail here, before touching the CAD kernel — a bad parameter
-should never reach the mesher.
+$w \le W_{\text{port}} \le W_{\text{sub}}$ and $h_{\text{sub}} < H_{\text{port}} \le
+z_{\text{air,top}}$ (§1.4's aperture must contain the trace horizontally and extend above the
+substrate/air interface, but never exceed the domain); $\varepsilon_{r,\text{sub}} \ge 1$. Fail
+here, before touching the CAD kernel — a bad parameter should never reach the mesher.
+
+### 1.4 Port aperture — decoupled from the domain cross-section
+
+**Added post-implementation, per the Module 0/4 port-aperture-decoupling review.** Originally
+the port face was welded to the *entire* domain cross-section at $x=0$/$x=L$ — Module 1's
+`PORT_p` tag covered $y\in[0,W_{\text{sub}}]$, $z\in[0,z_{\text{air,top}}]$ in full, forcing
+Module 4's 2D port eigenproblem onto an oversized, PMC-walled box that can support its own
+near-degenerate "box modes" close to the quasi-TEM $\beta$ (Module 4 §3.7's documented
+mode-selection limitation). Standard wave-port practice sizes the aperture below $\lambda/2$ to
+push those box modes' cutoff above the band of interest.
+
+$$W_{\text{port}},\ H_{\text{port}} \qquad \text{(port aperture width, height — both optional,
+default None} \Rightarrow \text{full cross-section)}$$
+
+Both `None` (the default) means $W_{\text{port}}=W_{\text{sub}}$, $H_{\text{port}}=z_{\text{air,top}}$
+— bit-for-bit the pre-existing full-cross-section behavior, for backward compatibility. Must be
+supplied together, never just one. §1.3 above already includes the resulting
+$y_0^{\text{port}}, y_1^{\text{port}}$ derived bounds and §1.3's validation already includes the
+aperture's hard bounds ($w\le W_{\text{port}}\le W_{\text{sub}}$,
+$h_{\text{sub}}<H_{\text{port}}\le z_{\text{air,top}}$).
+
+**Design**: the aperture is a rectangle centered on the trace horizontally, bottom on the
+ground plane — $y\in[y_0^{\text{port}}, y_1^{\text{port}}]$, $z\in[0, H_{\text{port}}]$. The
+end-plane region *outside* the aperture (when the aperture is strictly smaller than the full
+cross-section) is tagged `PORT_CAP` — a PEC "cap" idealization (§4.3/4.4) — rather than left as
+part of `PORT_p`. This is what raises the aperture's own box-mode cutoff, and it makes the
+aperture's own side/top walls PEC in Module 4's 2D eigenproblem *for free*, via Module 1's
+existing "a 2D edge is PEC iff it is an edge of some `PEC`-tagged 3D face" rule (Module 4 §2.3)
+— no new Module 4 code needed. Fringing fields are assumed contained inside the aperture by the
+lower-bound sizing rule (`ports.sizing.check_port_sizing`, informational only, never a hard
+gate), so the cap sees negligible field — the standard accepted idealization for a sized wave
+port.
+
+**Implementation note, not assumed by the design above**: the 2D port-mode eigenproblem's
+numerical conditioning depends on how many mesh triangles actually resolve the aperture — a
+very small aperture at a coarse mesh density can leave Module 4 unable to find enough
+well-conditioned modes (`PortModeError`, not a `ports.sizing` warning, since it's a distinct
+resolution issue, not a box-mode-margin one). Sizing the aperture per `ports.sizing`'s rules of
+thumb is necessary but not sufficient; the mesh must also resolve it.
 
 ---
 
@@ -215,12 +259,24 @@ own tolerance.
    rectangle $x\in[0,L],\ y\in[y_0^{\text{trace}},y_1^{\text{trace}}]$, added as an internal
    partitioning face so the mesher produces a distinct, exactly-bounded set of triangles
    covering the trace footprint, taggable directly (rather than a post-hoc query).
-5. **Fragment** the five bricks of step 3 together into one connected solid with coincident
-   internal faces at $x=x_{c0}$, $x=x_{c1}$ (longitudinal interfaces), and $y=y_{lc0}$,
-   $y=y_{lc1}$ **within the cavity's length interval only** (the new transverse interfaces
-   introduced by the wings). A single fragment call across all five pieces handles both sets
-   of interfaces at once — no special-casing is needed for the fact that the transverse split
-   only exists over part of the domain's length.
+4a. **When the port aperture (§1.4) is strictly smaller than the full cross-section, embed one
+   partitioning rectangle on each end plane** ($x=0$ and $x=L$), spanning
+   $y\in[y_0^{\text{port}},y_1^{\text{port}}]$, $z\in[0,H_{\text{port}}]$ — the same
+   embed-then-fragment pattern as step 4, just on a vertical plane instead of a horizontal one
+   (built from raw points/lines/a curve loop rather than the CAD kernel's axis-aligned
+   rectangle primitive, which only builds in a $z={\rm const}$ plane). Skipped entirely when the
+   aperture equals the full cross-section (the default) — zero new geometry, bit-for-bit the
+   pre-existing behavior.
+5. **Fragment** the five bricks of step 3, together with every rectangle embedded in steps 4/4a,
+   into one connected solid with coincident internal faces at $x=x_{c0}$, $x=x_{c1}$
+   (longitudinal interfaces), $y=y_{lc0}$, $y=y_{lc1}$ **within the cavity's length interval
+   only** (the new transverse interfaces introduced by the wings), and — when step 4a ran — the
+   port-aperture outline on each end plane. A single fragment call across all pieces and all
+   embedded rectangles handles every interface at once. The embedded end-plane rectangles'
+   descendants (a fragment `out_map` entry, exactly like the trace rectangle's) give the
+   aperture's own face(s) *exactly*, by construction — not a post-hoc centroid/bounding-box
+   query with tolerance risk at the aperture boundary, consistent with this section's own
+   embed-not-query philosophy.
 6. **Build the Air brick**: $x\in[0,L]$, $y\in[0,W_{\text{sub}}]$, $z\in[h_{\text{sub}}, z_{\text{air,top}}]$.
    Fragment against the top face of step 5's composite (this is also where the trace-footprint
    partition from step 4 propagates upward if the trace needs representation on both sides of
@@ -258,8 +314,8 @@ own tolerance.
 |---|---|
 | `PEC_GROUND` | Bottom face, $z=0$, full $x,y$ extent |
 | `PEC_LINE` | The embedded trace-footprint patch at $z=h_{\text{sub}}$ |
-| `PORT_1` | Face at $x=0$, restricted to $z\in[0,z_{\text{air,top}}]$ (substrate + air only) |
-| `PORT_2` | Face at $x=L$, same $z$-restriction |
+| `PORT_1` | Face at $x=0$, restricted to the port **aperture** $y\in[y_0^{\text{port}},y_1^{\text{port}}]$, $z\in[0,H_{\text{port}}]$ (§1.4) — equals the full substrate+air cross-section when the aperture is left at its default |
+| `PORT_2` | Face at $x=L$, same restriction |
 
 ### 4.3 Surface tags — new, introduced by this module's truncation choices
 
@@ -269,14 +325,17 @@ These extend Module 1's tag set and should be added to its `boundary_faces(tag)`
 |---|---|---|
 | `PML_OUTER_PEC` | All exterior faces of the `PML_TOP` brick *except* its bottom (shared, interior, not a boundary) — top cap, two lateral sides, two end caps | The PEC backing that terminates the PML shell (top-level doc §5: "PEC-backed outer wall"). The PML block's own end-caps and sides are exterior too, since PML here is a thin shell only in $z$; they get the same PEC treatment as the top. |
 | `PMC_SIDE` | Lateral faces $y=0$ and $y=W_{\text{sub}}$, for $z\in[0,z_{\text{air,top}}]$ (substrate + air portion only — the PML shell's own sides are already covered by `PML_OUTER_PEC`) | The natural (no boundary term) truncation from §0 point 3. **Explicitly tagged, not left untagged** — see §6. With the narrower cavity, these faces are now backed by `SUBSTRATE` (the wings) at every longitudinal position, including within the cavity's length range — never directly by `LC`. This wasn't guaranteed in the full-width-cavity version and is one of the robustness benefits of the correction (§0 point 3). |
+| `PORT_CAP` | The end-plane region at $x=0$/$x=L$ **outside** the port aperture (§1.4) — empty (no physical group emitted) whenever the aperture equals the full cross-section | The PEC "cap" idealization step 4a's embedded rectangle makes taggable. Folded into Module 1's combined `PEC` set (`PEC_GROUND` ∪ `PEC_LINE` ∪ `PORT_CAP`), **not** kept as its own bucket — this is what makes the aperture's own side/top walls PEC in Module 4's 2D port eigenproblem automatically, via Module 1's existing "a 2D edge is PEC iff it borders a PEC-tagged 3D face" rule (Module 4 §2.3), with zero new Module 4 code. |
 
-**Why `PMC_SIDE` must be an explicit tag, not silence**: Module 1's boundary coverage check
-(its §5.3) treats an *untagged* boundary face as a likely bug — "the model has an open surface
-the solver would treat as a perfect magnetic wall by default — almost always unintended." Here
-it *is* intended. Tagging it explicitly as `PMC_SIDE` keeps that check meaningful: every
-boundary face still resolves to exactly one tag, and this tag documents that the natural BC is
-a deliberate modeling choice, not an omission. This is the one addition Module 1 needs to make
-to its tag vocabulary to accommodate this module's output.
+**Why `PMC_SIDE` (and, by the same argument, `PORT_CAP`) must be an explicit tag, not silence**:
+Module 1's boundary coverage check (its §5.3) treats an *untagged* boundary face as a likely bug
+— "the model has an open surface the solver would treat as a perfect magnetic wall by default —
+almost always unintended." Here it *is* intended. Tagging it explicitly keeps that check
+meaningful: every boundary face still resolves to exactly one tag, and the tag documents that
+the boundary condition there is a deliberate modeling choice, not an omission. `PMC_SIDE` and
+`PORT_CAP` are the two additions Module 1 needs to make to its tag vocabulary to accommodate
+this module's output (`PORT_CAP` folded into the existing `PEC` aggregate, not a new bucket of
+its own — see Module 1 §5.3).
 
 ---
 
@@ -335,9 +394,16 @@ that shell (here, always `AIR`, since the PML sits entirely above the air region
   detect if the error is a compensating gap/overlap pair). This is the CAD-level analogue of
   Module 1's post-mesh "sum of tet volumes per tag" check (§8 there).
 - **Tag coverage** (pre-mesh): every exterior face of the fragmented solid resolves to exactly
-  one of `PEC_GROUND`, `PEC_LINE`, `PORT_1`, `PORT_2`, `PML_OUTER_PEC`, `PMC_SIDE`. No exterior
-  face may be left untagged — this is what makes Module 1's downstream coverage check pass
-  meaningfully rather than trivially.
+  one of `PEC_GROUND`, `PEC_LINE`, `PORT_1`, `PORT_2`, `PML_OUTER_PEC`, `PMC_SIDE`, `PORT_CAP`.
+  No exterior face may be left untagged — this is what makes Module 1's downstream coverage
+  check pass meaningfully rather than trivially. `PORT_CAP` is simply empty (no physical group)
+  whenever the aperture is left at its default full-cross-section value.
+- **Port-aperture containment** (§1.4, new): the embedded end-plane rectangles give the aperture
+  face(s) *exactly* (step 4a/5), so this is checked by construction rather than as a separate
+  post-mesh assertion — unlike the trace footprint (embedded on an *interior* plane, so its
+  containment within the substrate/air interface footprint still needs the check below), the
+  aperture rectangle is embedded directly on the *exterior* boundary it partitions, and its
+  fragment descendants are used as the `PORT_p` face set with no further geometric query.
 - **Trace footprint containment**: the embedded trace rectangle lies strictly within the
   substrate/air interface footprint, i.e. $0 < y_0^{\text{trace}} < y_1^{\text{trace}} <
   W_{\text{sub}}$ — a direct consequence of the $W_{\text{sub}}>w$ parameter check, re-asserted
@@ -348,6 +414,10 @@ that shell (here, always `AIR`, since the PML sits entirely above the air region
   parameter check (§1.3). Assert both bounds, not just the width inequality that implies them,
   since a centering bug could satisfy $w\le W_{\text{lc}}$ while still placing the trace
   off-center relative to the cavity.
+- **Port-aperture/trace containment** (§1.4, new): $y_0^{\text{port}} \le y_0^{\text{trace}}$ and
+  $y_1^{\text{trace}} \le y_1^{\text{port}}$ — same defensive-assertion style as the
+  trace-within-cavity check just above (both bounds, not just $w\le W_{\text{port}}$, even
+  though centering makes the width inequality sufficient here too).
 - **Reduction tie-in** (solver-level, not this module's to run, but worth stating as the target
   this geometry construction is built to support): with the `LC` volume assigned the *same*
   material as `SUBSTRATE` (a trivial material-spec substitution, no geometry change), the
@@ -364,6 +434,7 @@ GeometryParams:
     w, L, L_lc, W_lc, h_sub, W_sub     # primary, user-facing (W_lc < W_sub, w <= W_lc)
     eps_r_substrate, tan_delta_substrate = 0.0
     h_air = <default>, h_pml = <default>          # secondary, defaulted
+    W_port = None, H_port = None       # port aperture (§1.4); None,None -> full cross-section
 
 class GeometryBuilder:
     def build(params: GeometryParams) -> (mesh_handle, material_spec_stub)

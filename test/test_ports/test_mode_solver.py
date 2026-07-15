@@ -147,3 +147,15 @@ def test_power_normalization_gives_unit_power(modes):
 def test_requesting_too_many_modes_raises_rather_than_returning_spurious_ones(solver, omega):
     with pytest.raises(PortModeError):
         solver.solve("PORT_1", omega, n_modes=1000)
+
+
+# --- ports.sizing wiring (port-aperture decoupling review) ---
+
+
+def test_solve_emits_port_sizing_warning_for_this_undersized_geometry(solver, omega):
+    """This fixture's own geometry (W_sub=0.01, h_sub=0.002, no aperture
+    restriction) is known to violate `ports.sizing`'s fringe-width rule
+    (w+6*h_sub=0.014 > W_sub=0.01) -- `solve()` must surface that as a
+    UserWarning, not silently proceed."""
+    with pytest.warns(UserWarning, match="fringing field"):
+        solver.solve("PORT_1", omega, n_modes=1)

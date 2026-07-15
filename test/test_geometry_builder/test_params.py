@@ -107,3 +107,63 @@ def test_rejects_eps_r_substrate_below_one():
 def test_rejects_nonpositive_reference_frequency(frequency):
     with pytest.raises(GeometryParameterError):
         _params(reference_frequency=frequency)
+
+
+# --- Section 1.4: port aperture ---
+
+
+def test_w_port_h_port_default_to_full_cross_section():
+    p = _params()
+    assert p.W_port == pytest.approx(p.W_sub)
+    assert p.H_port == pytest.approx(p.h_sub + p.h_air)
+
+
+def test_explicit_w_port_h_port_are_not_overridden():
+    p = _params(W_port=0.006, H_port=0.005)
+    assert p.W_port == pytest.approx(0.006)
+    assert p.H_port == pytest.approx(0.005)
+
+
+@pytest.mark.parametrize("overrides", [{"W_port": 0.006}, {"H_port": 0.005}])
+def test_rejects_w_port_h_port_given_separately(overrides):
+    with pytest.raises(GeometryParameterError):
+        _params(**overrides)
+
+
+@pytest.mark.parametrize("W_port", [0.0009, 0.0, -0.001, 0.011])
+def test_rejects_w_port_out_of_range(W_port):
+    """W_port must satisfy w <= W_port <= W_sub (w=0.002, W_sub=0.010)."""
+    with pytest.raises(GeometryParameterError):
+        _params(W_port=W_port, H_port=0.005)
+
+
+@pytest.mark.parametrize("H_port", [0.002, 0.001, 0.0, 0.009])
+def test_rejects_h_port_out_of_range(H_port):
+    """H_port must satisfy h_sub < H_port <= z_air_top (h_sub=0.002,
+    z_air_top=h_sub+3*h_sub=0.008 by default)."""
+    with pytest.raises(GeometryParameterError):
+        _params(W_port=0.006, H_port=H_port)
+
+
+def test_w_port_equal_to_w_sub_and_h_port_equal_to_z_air_top_are_allowed():
+    p = _params(W_port=0.010, H_port=0.008)
+    assert p.W_port == pytest.approx(0.010)
+    assert p.H_port == pytest.approx(0.008)
+
+
+def test_derived_port_aperture_bounds_hand_computed():
+    p = _params(W_port=0.006, H_port=0.005)
+    geom = derive(p)
+    assert geom.y0_port == pytest.approx((p.W_sub - p.W_port) / 2.0)
+    assert geom.y1_port == pytest.approx((p.W_sub + p.W_port) / 2.0)
+
+
+def test_rejects_port_aperture_not_containing_trace():
+    """w=0.002 centered on W_sub=0.010 -> y0_trace=0.004, y1_trace=0.006.
+    A W_port narrower than w, offset so it's still centered, cannot
+    contain the trace -- but centering makes w<=W_port sufficient here, so
+    this exercises Section 1.3's hard w<=W_port bound instead (the
+    explicit y0_port/y1_port containment check is the geometric-level
+    consequence of that same bound, per derive()'s own defensive style)."""
+    with pytest.raises(GeometryParameterError):
+        _params(W_port=0.001, H_port=0.005)

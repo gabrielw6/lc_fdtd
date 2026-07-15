@@ -106,20 +106,43 @@ def test_build_B_is_supported_only_on_port_edges(mesh_and_solver, port_modes):
     assert set(cols.tolist()) <= allowed
 
 
-def test_build_B_relative_asymmetry_is_finite(mesh_and_solver, port_modes):
-    """Section 5.1's "B_p manifestly symmetric" claim carries its own
-    honesty flag, independent of (and not resolved by) Section 3.6's now-
-    fixed sign bug -- the doc is explicit that this is *not* the real
-    acceptance gate (Section 8: "the real acceptance criterion... is the
-    top-level doc's Phase 1 gate", i.e. end-to-end reciprocity once
-    Modules 6/7 exist). Observed relative asymmetry also depends on which
-    specific discrete eigenvalue lands in a non-dominant mode slot (the
-    same KNOWN LIMITATION `mode_solver.py` documents), so no numeric bound
-    is asserted here -- only that `build_B` produces a well-defined
-    (finite, non-NaN) result at all."""
+def test_build_B_is_symmetric_to_near_machine_precision(mesh_and_solver, port_modes):
+    """Post-review: `build_B` now assembles `(Y_m**2)*outer(overlap_e,
+    overlap_e)` rather than `Y_m*outer(overlap_e, overlap_h)` (Section
+    5.1's update) -- every summand is `scalar * outer(v, v)`, symmetric in
+    the literal matrix regardless of mode quality, not merely "finite".
+    Real relative asymmetry observed here is at the level of floating-
+    point roundoff, several orders of magnitude tighter than the old
+    formula's ~130% worst case (see test_build_B_is_symmetric_for_a_mode_
+    with_an_inconsistent_overlap_h below for a direct demonstration that
+    this holds even when the old formula would not have)."""
     mesh, _solver, omega = mesh_and_solver
     B = build_B(port_modes, mesh, omega).toarray()
     assert np.all(np.isfinite(B))
+    residual = np.abs(B - B.T).max()
+    scale = max(1.0, np.abs(B).max())
+    assert residual <= 1e-9 * scale
+
+
+def test_build_B_is_symmetric_for_a_mode_with_an_inconsistent_overlap_h(mesh_and_solver, port_modes):
+    """The strongest possible demonstration that build_B no longer relies
+    on overlap_h ~ Y*overlap_e holding even approximately: corrupt one
+    mode's cached overlap_h with unrelated garbage (breaking the identity
+    completely -- exactly what a marginal/poorly-resolved mode does, only
+    more extreme) and confirm build_B is still exactly symmetric, because
+    it never reads overlap_h at all."""
+    import dataclasses
+
+    mesh, _solver, omega = mesh_and_solver
+    mode = port_modes["PORT_1"][0]
+    corrupted = dataclasses.replace(mode, overlap_h=np.arange(mode.overlap_h.shape[0], dtype=complex) * (1 + 2j))
+    corrupted_port_modes = {**port_modes, "PORT_1": [corrupted, *port_modes["PORT_1"][1:]]}
+
+    B = build_B(corrupted_port_modes, mesh, omega).toarray()
+    assert np.all(np.isfinite(B))
+    residual = np.abs(B - B.T).max()
+    scale = max(1.0, np.abs(B).max())
+    assert residual <= 1e-9 * scale
 
 
 def test_build_g_only_touches_excited_ports_edges(mesh_and_solver, port_modes):

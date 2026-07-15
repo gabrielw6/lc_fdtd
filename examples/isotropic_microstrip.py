@@ -107,6 +107,8 @@ if __name__ == "__main__":
                 "--h-port", "0.006",
                 "--plot",
                 "--show-geometry",
+                "--plot-field-slice", "x=0.01",
+                "--slice-grid", "120"
             ]
         )
     )

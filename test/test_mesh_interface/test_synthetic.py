@@ -139,6 +139,25 @@ def test_pec_aggregates_ground_and_line():
     assert len(pec) == 2  # one exterior face each, both incidence 1 here
 
 
+def test_pec_aggregates_port_cap_too():
+    """Section 5.3 addendum (Module 0's port-aperture decoupling): a
+    PORT_CAP-tagged face must fold into the same PEC aggregate as
+    PEC_GROUND/PEC_LINE -- relabel one previously-PMC_SIDE face as
+    PORT_CAP (boundary coverage is unaffected, since it's still exactly
+    one tag per face, just a different name) and confirm it now shows up
+    in boundary_faces('PEC')."""
+    tags = dict(FULL_SURFACE_TAGS)
+    tags["PORT_CAP"] = tags.pop("PMC_SIDE")
+    mi = _build(tags)
+    pec = set(mi.boundary_faces("PEC"))
+    ground_only = set(mi.boundary_faces("PEC_GROUND"))
+    line_only = set(mi.boundary_faces("PEC_LINE"))
+    cap_only = set(mi.boundary_faces("PORT_CAP"))
+    assert pec == ground_only | line_only | cap_only
+    assert len(cap_only) == 1
+    assert len(pec) == 3
+
+
 def test_pml_outer_resolves_to_pml_outer_pec():
     mi = _build()
     assert mi.boundary_faces("PML_OUTER") == mi.boundary_faces("PML_OUTER_PEC")

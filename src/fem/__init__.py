@@ -9,6 +9,7 @@ boundary, not a violation of it. `fem` never imports `geometry_builder`,
 """
 from .assembly import DEFAULT_LEVELS, AssemblyConvergenceError, assemble, element_matrices
 from .edge_elements import whitney_basis, whitney_curl
+from .field_eval import evaluate_curl_field, evaluate_edge_field
 
 __all__ = [
     "assemble",
@@ -17,4 +18,6 @@ __all__ = [
     "DEFAULT_LEVELS",
     "whitney_basis",
     "whitney_curl",
+    "evaluate_edge_field",
+    "evaluate_curl_field",
 ]

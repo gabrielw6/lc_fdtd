@@ -22,6 +22,7 @@ dispatches to LAPACK's `ggev`/`cggev` (QZ).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -35,6 +36,7 @@ from mesh_interface import quadrature as mesh_quadrature
 
 from .basis2d import TRI_LOCAL_EDGES, whitney2d_basis, whitney2d_curl
 from .cross_section import PortCrossSection, extract_cross_section
+from .sizing import check_port_sizing_for_cross_section
 
 _BASE_ORDER = 2
 _GAMMA_SQ_MAGNITUDE_CEILING = 1e12  # Section 3.6: B is singular (the e_x-e_x
@@ -472,7 +474,18 @@ class PortModeSolver:
     """Section 9's class contract. Caches each port's extracted
     `PortCrossSection` (Section 2's geometry is frequency-independent) but
     re-solves the eigenproblem on every `solve` call (Section 3's blocks
-    depend on `omega` through `k0`)."""
+    depend on `omega` through `k0`).
+
+    `solve`'s `n_modes`/`n_desired` split (added post-review, single-mode-
+    tolerant mode counting): a correctly-sized port aperture is often
+    genuinely single-mode -- only the quasi-TEM mode propagates, and
+    higher candidates are evanescent/un-power-normalizable by physics, not
+    by a solver defect. `n_modes` is the *required* minimum (raise if
+    fewer are found); `n_desired` (default: `n_modes`, preserving the
+    original "requested count is required" behavior when omitted) is how
+    many to *try* to return, for callers (the sweep's oversupply, Section
+    6.2 step 1) that want extra candidates for mode tracking but must
+    tolerate a port not having that many physical modes at all."""
 
     def __init__(self, mesh: MeshInterface, materials: MaterialAssembly) -> None:
         self._mesh = mesh
@@ -484,8 +497,27 @@ class PortModeSolver:
             self._cross_sections[port_tag] = extract_cross_section(self._mesh, port_tag)
         return self._cross_sections[port_tag]
 
-    def solve(self, port_tag: str, omega: float, n_modes: int = 2) -> list[PortMode]:
+    def solve(
+        self, port_tag: str, omega: float, n_modes: int = 2, n_desired: int | None = None
+    ) -> list[PortMode]:
+        """Returns between `n_modes` and `n_desired` modes, ranked by
+        decreasing beta (Section 3.7): raises `PortModeError` only if
+        fewer than the *required* `n_modes` are found (a genuine failure);
+        returns fewer than `n_desired` without raising when the port
+        simply doesn't have that many valid modes (an expected outcome for
+        a single-mode-by-design aperture, not an error)."""
+        n_desired = n_modes if n_desired is None else max(n_modes, n_desired)
         cs = self.cross_section(port_tag)
+
+        # Port-aperture sizing advisory (ports.sizing) -- informational
+        # only, never raises; this is one of the two emission points the
+        # Module 0/4 port-aperture decoupling review calls for (the other
+        # is a single upfront check at the sweep's own f_max, in
+        # `solve.sweep.run_sweep`).
+        f_max = omega / (2.0 * np.pi)
+        for msg in check_port_sizing_for_cross_section(cs, self._materials, f_max):
+            warnings.warn(f"port {port_tag!r} at {f_max:.4g} Hz: {msg}", stacklevel=2)
+
         S_tt, S_zz, T_tt, T_zt, S_tz = _assemble_blocks(cs, self._materials, omega)
 
         # Section 3.5's exact algebraic identity, independent of Section
@@ -517,7 +549,7 @@ class PortModeSolver:
         if len(gamma_sq) < n_modes:
             raise PortModeError(
                 f"only {len(gamma_sq)} finite generalized eigenvalue(s) at port {port_tag!r}, "
-                f"requested {n_modes}"
+                f"required at least {n_modes}"
             )
 
         gamma_all = np.sqrt(gamma_sq)  # principal branch: Re>=0, Im>0 when purely imaginary (Section 3.7)
@@ -539,7 +571,7 @@ class PortModeSolver:
         if len(gamma_all) < n_modes:
             raise PortModeError(
                 f"only {len(gamma_all)} physically-plausible mode(s) remained at port {port_tag!r} "
-                f"after discarding spurious eigenvalues, requested {n_modes}"
+                f"after discarding spurious eigenvalues, required at least {n_modes}"
             )
 
         # Section 3.7: sorted by decreasing beta. See the KNOWN LIMITATION
@@ -558,7 +590,7 @@ class PortModeSolver:
         # 9's contract regardless, so skipping it (not crashing) is correct.
         modes: list[PortMode] = []
         for candidate in range(gamma_all.shape[0]):
-            if len(modes) == n_modes:
+            if len(modes) == n_desired:
                 break
             gamma = complex(gamma_all[candidate])
             v = vecs[:, candidate]
@@ -591,7 +623,8 @@ class PortModeSolver:
 
         if len(modes) < n_modes:
             raise PortModeError(
-                f"only {len(modes)} power-normalizable mode(s) found at port {port_tag!r}, requested {n_modes}"
+                f"only {len(modes)} power-normalizable mode(s) found at port {port_tag!r}, "
+                f"required at least {n_modes} (desired up to {n_desired})"
             )
         return modes
 

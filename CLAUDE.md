@@ -83,11 +83,54 @@ then the code. Never let them silently drift.
 Mesh **generation** (the meshing algorithm itself) is external (existing package). Module 0
 builds and tags the one fixed topology (microstrip + centered LC cutout) from a handful of
 dimension parameters and invokes that external mesher; Module 1 then consumes the tagged
-mesh read-only. Module 0 also introduces two boundary tags beyond Module 1's original list —
-`PML_OUTER_PEC` and `PMC_SIDE` (the latter is a *deliberate* natural/PMC truncation on the
-lateral faces, explicitly tagged so Module 1's "every boundary face must resolve to a tag"
-coverage check stays meaningful rather than flagging it as an omission). See
+mesh read-only. Module 0 also introduces three boundary tags beyond Module 1's original list —
+`PML_OUTER_PEC`, `PMC_SIDE` (a *deliberate* natural/PMC truncation on the lateral faces,
+explicitly tagged so Module 1's "every boundary face must resolve to a tag" coverage check
+stays meaningful rather than flagging it as an omission), and `PORT_CAP` (folded into Module
+1's combined `PEC` tag aggregate, not its own bucket — see below). See
 `docs/module0_geometry_builder_equations.md`.
+
+**Port-aperture decoupling** (added post-review, `module0_geometry_builder_equations.md` §1.4 /
+`module4_ports_equations.md` §3.7): `GeometryParams.W_port`/`H_port` (both optional, default
+`None` ⇒ full cross-section, backward compatible) let a `PORT_p` face be a sub-rectangle of the
+domain's end-plane cross-section rather than the whole thing. The region outside the aperture
+is tagged `PORT_CAP`, a PEC "cap" idealization folded into the `PEC` aggregate (`PEC_GROUND` ∪
+`PEC_LINE` ∪ `PORT_CAP`) — this is what makes a restricted aperture's own side/top walls PEC in
+Module 4's 2D port eigenproblem automatically, with **zero changes to `ports.cross_section`'s
+extraction logic or the eigenproblem itself** (Module 4's `mode_solver.py` did later gain an
+unrelated change, immediately below). `ports.sizing.check_port_sizing` (informational only,
+never raises) flags an aperture too large (box-mode risk near Module 4 §3.7's known limitation)
+or too small (fringing-field clipping risk); emitted once per port at the sweep's own `f_max`
+(`solve.sweep.run_sweep`) and once per `PortModeSolver.solve` call. A correctly-sized aperture
+still needs the mesh to actually resolve it — an under-resolved aperture can fail to find enough
+well-conditioned modes at all (`PortModeError`), a distinct failure from mis-selecting a box
+mode; sizing and mesh resolution are both necessary, neither alone sufficient.
+
+**Single-mode-tolerant mode counting** (added post-review, alongside the port-aperture
+decoupling above — `module4_ports_equations.md` §3.7's third mitigation): a correctly-sized
+aperture is often genuinely single-mode by physics, but `PortModeSolver.solve`'s original
+contract pinned "how many modes are required" and "how many to try to return" to the same
+`n_modes` argument, so a single-mode port failed outright rather than succeeding with 1.
+`solve(port_tag, omega, n_modes, n_desired=None)` now separates them: `n_modes` is the required
+minimum (still raises `PortModeError` if not met); `n_desired` (default `n_modes`, so omitting
+it preserves the old exact-match behavior) is `solve.sweep.run_sweep`'s tracking oversupply,
+allowed to come back short without raising. `run_sweep` passes its own `n_modes` as the
+required minimum and `n_modes+2` as `n_desired`. The CLI's `--n-modes` default changed to `1`
+accordingly (physically correct for a plain isotropic line; raise it for anisotropic/LC cases
+where a second, cross-polarization mode is genuinely expected).
+
+**`B_p` symmetric-by-construction** (added post-review, same review as the two items above):
+`ports.port_operator.build_B`'s original formula (`Y_m * outer(overlap_e, overlap_h)`) is
+symmetric only via the modal-admittance identity `h_m = Y_m*(x_hat x e_m)`, which holds
+analytically but not to the discrete field reconstruction's own precision — a marginal mode was
+confirmed to produce up to ~130% relative asymmetry, tripping `solve.system.factor`'s symmetry
+check on an otherwise-correct system with a misleading "transposed tensor index" diagnosis.
+`build_B` now assembles `(Y_m**2) * outer(overlap_e, overlap_e)` instead — algebraically equal
+when the identity holds, but symmetric *by construction* (a sum of `scalar * outer(v,v)` terms)
+regardless of mode quality. `solve.system._SYMMETRY_TOL` was tightened back from `0.3` to
+`1e-6` accordingly, and `factor()` gained an optional `components` parameter so a genuine
+symmetry failure's error message can name which contributing term (`K-k0^2*M` vs `B`) actually
+broke symmetry instead of always blaming a tensor-index bug.
 
 `docs/module3_fem_assembly_equations.md` §1 added three small, purely geometric additions to
 Module 1's contract — barycentric weights returned from `quadrature_tet`, a per-tet volume tag
@@ -144,8 +187,11 @@ crash), so they are encoded as assertions, not left to reviewer vigilance.
    across the LC region; eigenvalues stay within `[ε⊥, ε∥]`.
 3. **`ε_r` symmetric ⇒ `M`, `K`, `Bₚ` complex-symmetric ⇒ S-matrix symmetric.** One property,
    checked at every layer. Use a **complex-symmetric** factorization (LDLᵀ-type), never a
-   Hermitian solver or Cholesky. Assert `‖M − Mᵀ‖ ≈ 0`; a failure is a transposed tensor index
-   and is the proximate cause of a non-reciprocal S.
+   Hermitian solver or Cholesky. Assert `‖M − Mᵀ‖ ≈ 0`; `Bₚ` is now assembled symmetric *by
+   construction* (`(Yₘ)² · outer(overlap_e, overlap_e)`, not `Yₘ · outer(overlap_e, overlap_h)`
+   — see the port-aperture-decoupling-review notes in §4 above), so `solve.system.factor` checks
+   this at a tight `1e-6` tolerance; a failure past that is a transposed tensor index and is the
+   proximate cause of a non-reciprocal S.
 4. **Ports live in isotropic feed sections** (geometry guarantees it: LC cutout length < line
    length). One **power-based** reference-impedance definition `(Yₘ, Nₘ)` threads the mode
    solver → port operator → extractor. Do not re-derive `Yₘ` independently in the extractor.

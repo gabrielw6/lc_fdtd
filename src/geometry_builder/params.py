@@ -33,6 +33,14 @@ class GeometryParams:
     h_air: float | None = None
     h_pml: float | None = None
 
+    # --- port aperture (Section 1.4): the end-plane sub-rectangle PORT_p
+    # actually tags, decoupled from the domain cross-section (W_sub,
+    # z_air_top). Both `None` (the default) means "full cross-section" --
+    # backward compatible with every geometry built before this was added.
+    # Must be given together, never just one. ---
+    W_port: float | None = None
+    H_port: float | None = None
+
     # --- mesh-resolution sizing for build() step 11 (not itself part of
     # the geometry) -- follows meshing.mesh_sizing's own convention: an
     # explicit reference_frequency, never derived or defaulted to zero ---
@@ -44,6 +52,14 @@ class GeometryParams:
             object.__setattr__(self, "h_air", 3.0 * self.h_sub)
         if self.h_pml is None:
             object.__setattr__(self, "h_pml", 0.5 * self.h_sub)
+        if (self.W_port is None) != (self.H_port is None):
+            raise GeometryParameterError(
+                f"W_port and H_port must be given together or both omitted, "
+                f"got W_port={self.W_port!r}, H_port={self.H_port!r}"
+            )
+        if self.W_port is None:
+            object.__setattr__(self, "W_port", self.W_sub)
+            object.__setattr__(self, "H_port", self.h_sub + self.h_air)
         _validate(self)
 
 
@@ -67,6 +83,16 @@ def _validate(p: GeometryParams) -> None:
         raise GeometryParameterError(f"h_air must be > 0, got {p.h_air!r}")
     if p.h_pml <= 0:
         raise GeometryParameterError(f"h_pml must be > 0, got {p.h_pml!r}")
+    z_air_top = p.h_sub + p.h_air
+    if not (p.w <= p.W_port <= p.W_sub):
+        raise GeometryParameterError(
+            f"W_port must satisfy w <= W_port <= W_sub, got W_port={p.W_port!r}, w={p.w!r}, W_sub={p.W_sub!r}"
+        )
+    if not (p.h_sub < p.H_port <= z_air_top):
+        raise GeometryParameterError(
+            f"H_port must satisfy h_sub < H_port <= z_air_top, got H_port={p.H_port!r}, "
+            f"h_sub={p.h_sub!r}, z_air_top={z_air_top!r}"
+        )
     if p.eps_r_substrate < 1:
         raise GeometryParameterError(f"eps_r_substrate must be >= 1, got {p.eps_r_substrate!r}")
     if p.reference_frequency <= 0:
@@ -84,6 +110,8 @@ class DerivedGeometry:
     y_lc1: float
     y0_trace: float
     y1_trace: float
+    y0_port: float
+    y1_port: float
     z_gnd: float
     z_iface: float
     z_air_top: float
@@ -97,6 +125,8 @@ def derive(p: GeometryParams) -> DerivedGeometry:
     y_lc1 = (p.W_sub + p.W_lc) / 2.0
     y0_trace = (p.W_sub - p.w) / 2.0
     y1_trace = (p.W_sub + p.w) / 2.0
+    y0_port = (p.W_sub - p.W_port) / 2.0
+    y1_port = (p.W_sub + p.W_port) / 2.0
 
     # Section 6, "Cavity margin": guaranteed by validation (0 < L_lc < L
     # together with centered placement), but asserted explicitly rather
@@ -124,6 +154,15 @@ def derive(p: GeometryParams) -> DerivedGeometry:
             f"the cavity's length: y0_trace={y0_trace!r}, y1_trace={y1_trace!r}, "
             f"y_lc0={y_lc0!r}, y_lc1={y_lc1!r}"
         )
+    # Port-aperture/trace containment: both bounds asserted explicitly (not
+    # just w<=W_port, which implies it only because both are centered on
+    # the same axis) -- same defensive style as the LC-cavity containment
+    # check just above.
+    if not (y0_port <= y0_trace and y1_trace <= y1_port):
+        raise GeometryParameterError(
+            f"port aperture must contain the trace footprint: y0_port={y0_port!r}, "
+            f"y1_port={y1_port!r}, y0_trace={y0_trace!r}, y1_trace={y1_trace!r}"
+        )
 
     return DerivedGeometry(
         x_c0=x_c0,
@@ -132,6 +171,8 @@ def derive(p: GeometryParams) -> DerivedGeometry:
         y_lc1=y_lc1,
         y0_trace=y0_trace,
         y1_trace=y1_trace,
+        y0_port=y0_port,
+        y1_port=y1_port,
         z_gnd=0.0,
         z_iface=p.h_sub,
         z_air_top=p.h_sub + p.h_air,

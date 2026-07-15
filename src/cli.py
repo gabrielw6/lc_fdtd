@@ -40,7 +40,7 @@ from mesh_interface.interface import MeshGeometryError  # noqa: E402
 from ports import CrossSectionError, PortModeError  # noqa: E402
 from solve import ModeTrackingError, SolveSingularityError, SweepPreconditionError, SystemSymmetryError  # noqa: E402
 from solve import run_sweep  # noqa: E402
-from visualization import PlottingUnavailableError, plot_geometry, plot_mesh  # noqa: E402
+from visualization import PlottingUnavailableError, plot_field_slice, plot_geometry, plot_mesh, plot_port_mode  # noqa: E402
 
 class CLIError(RuntimeError):
     """Raised for a bad CLI invocation (argument combination this parser's
@@ -87,6 +87,25 @@ def _direction(text: str) -> np.ndarray:
     return vec
 
 
+_ALL_PORTS_SENTINEL = "__ALL__"
+
+
+def _axis_value(text: str) -> tuple[str, float]:
+    """Parses `--plot-field-slice`'s `AXIS=VALUE` syntax (e.g. `x=0.01`)
+    into the `(axis, value)` tuple `visualization.plot_field_slice` takes."""
+    if "=" not in text:
+        raise argparse.ArgumentTypeError(f"expected 'axis=value' (e.g. 'x=0.01'), got {text!r}")
+    axis, raw_value = text.split("=", 1)
+    axis = axis.strip().lower()
+    if axis not in ("x", "y", "z"):
+        raise argparse.ArgumentTypeError(f"axis must be 'x', 'y', or 'z', got {axis!r}")
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"could not parse value in {text!r}: {exc}") from exc
+    return axis, value
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cli.py",
@@ -115,9 +134,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     freq.add_argument("--f-points", type=int, default=1, help="number of frequency points (default 1)")
 
     ports = p.add_argument_group("ports / sweep")
-    ports.add_argument("--n-modes", type=int, default=2, help="tracked modes per port (default 2)")
+    ports.add_argument(
+        "--n-modes", type=int, default=1,
+        help="required tracked modes per port (default 1 -- physically correct for a plain "
+        "isotropic line; raise to 2-3 for anisotropic/LC cases where cross-polarization mode "
+        "conversion is expected). This is a required minimum, not a fixed count: "
+        "solve.run_sweep requests n_modes+2 as a desired oversupply for mode tracking but only "
+        "raises if fewer than n_modes physical modes are actually found (ports.mode_solver's "
+        "n_modes/n_desired split)",
+    )
     ports.add_argument("--offset-port1", type=float, default=0.0, help="de-embedding offset at PORT_1 [m] (default 0.0)")
     ports.add_argument("--offset-port2", type=float, default=0.0, help="de-embedding offset at PORT_2 [m] (default 0.0)")
+    ports.add_argument(
+        "--w-port", type=float, default=None, dest="w_port",
+        help="port aperture width [m] (default: full cross-section, W_sub). Must be given "
+        "together with --h-port. Smaller than the full cross-section avoids Module 4's known "
+        "box-mode mode-selection limitation -- see ports.sizing.check_port_sizing",
+    )
+    ports.add_argument(
+        "--h-port", type=float, default=None, dest="h_port",
+        help="port aperture height [m] (default: full cross-section, h_sub+h_air). Must be "
+        "given together with --w-port.",
+    )
 
     pml = p.add_argument_group("PML (docs/module5_pml_equations.md Section 2)")
     pml.add_argument("--pml-r0", type=float, default=1e-6, help="target reflection coefficient (default 1e-6)")
@@ -150,6 +188,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--geometry-only", action="store_true",
         help="build the geometry/mesh, run any requested --show-geometry/--show-mesh plots, then exit "
         "without running the frequency sweep",
+    )
+
+    field_viz = p.add_argument_group("field visualization (visualization.port_field / visualization.field_slice)")
+    field_viz.add_argument(
+        "--plot-port-field", nargs="?", const=_ALL_PORTS_SENTINEL, action="append", default=None, metavar="PORT_TAG",
+        help="plot the dominant tracked mode's transverse field distribution for PORT_TAG (repeatable; "
+        "bare flag with no value plots all ports) -- the HFSS-style 'port field distribution' "
+        "diagnostic (visualization.port_field.plot_port_mode)",
+    )
+    field_viz.add_argument(
+        "--port-field-style", choices=["mag", "quiver"], default="mag",
+        help="'mag': |field| heatmap (default); 'quiver': direction arrows over a faint |field| background",
+    )
+    field_viz.add_argument(
+        "--port-field", choices=["E", "H"], default="E", dest="port_field_component",
+        help="which field to plot in --plot-port-field (default E)",
+    )
+    field_viz.add_argument(
+        "--port-field-output", type=Path, default=None,
+        help="save the (first) port-field plot to this path",
+    )
+    field_viz.add_argument(
+        "--plot-field-slice", type=_axis_value, default=None, metavar="AXIS=VALUE",
+        help="plot a volume |E| (or |H|, see --slice-field) slice on the axis-aligned plane AXIS=VALUE "
+        "(e.g. 'x=0.01'), rendered at its true 3D location overlaid on the structure -- reuses "
+        "--show-geometry's own 3D view/axes (visualization.field_slice.plot_field_slice); if "
+        "--show-geometry was not also given, a structure view is created internally so the slice "
+        "always appears in context",
+    )
+    field_viz.add_argument(
+        "--slice-field", choices=["E", "H"], default="E",
+        help="which field to plot in --plot-field-slice (default E)",
+    )
+    field_viz.add_argument(
+        "--slice-excitation", type=str, default=None, metavar="PORT_TAG",
+        help="which excited port's driven solution to slice (default: the first port)",
+    )
+    field_viz.add_argument("--slice-grid", type=int, default=120, help="slice sampling grid resolution (default 120)")
+    field_viz.add_argument(
+        "--field-slice-output", type=Path, default=None,
+        help="save the field-slice plot to this path",
     )
 
     out = p.add_argument_group("output")
@@ -333,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         params = GeometryParams(
             w=args.w, L=args.L, L_lc=args.L_lc, W_lc=args.W_lc, h_sub=args.h_sub, W_sub=args.W_sub,
             eps_r_substrate=args.eps_r_substrate, tan_delta_substrate=args.tan_delta_substrate,
-            h_air=args.h_air, h_pml=args.h_pml,
+            h_air=args.h_air, h_pml=args.h_pml, W_port=args.w_port, H_port=args.h_port,
             reference_frequency=reference_frequency, target_elements_per_wavelength=args.mesh_density,
         )
 
@@ -399,6 +478,36 @@ def main(argv: list[str] | None = None) -> int:
             )
             if args.plot_output is not None:
                 log(f"Wrote {args.plot_output}")
+
+        if args.plot_port_field is not None:
+            requested = ports if _ALL_PORTS_SENTINEL in args.plot_port_field else args.plot_port_field
+            for tag in requested:
+                if tag not in ports:
+                    raise CLIError(f"--plot-port-field: unknown port {tag!r} (known: {ports})")
+            log(f"Plotting port field(s) for {requested}...")
+            for i, tag in enumerate(requested):
+                mode = sweep_results[0].port_modes[tag][0]
+                plot_port_mode(
+                    mode, field=args.port_field_component, style=args.port_field_style, mode_index=1,
+                    show=True, output=args.port_field_output if i == 0 else None,
+                )
+            if args.port_field_output is not None:
+                log(f"Wrote {args.port_field_output}")
+
+        if args.plot_field_slice is not None:
+            slice_port = args.slice_excitation if args.slice_excitation is not None else ports[0]
+            if slice_port not in ports:
+                raise CLIError(f"--slice-excitation: unknown port {slice_port!r} (known: {ports})")
+            result = next((r for r in sweep_results if r.omega == omegas[0] and r.excitation[0] == slice_port), None)
+            if result is None:
+                raise CLIError(f"no sweep result found for excitation ({slice_port!r}, 1) at the first frequency")
+            log(f"Plotting field slice {args.plot_field_slice}...")
+            plot_field_slice(
+                mesh, result, args.plot_field_slice, grid=args.slice_grid, field=args.slice_field,
+                show=True, output=args.field_slice_output,
+            )
+            if args.field_slice_output is not None:
+                log(f"Wrote {args.field_slice_output}")
 
         return 0
 

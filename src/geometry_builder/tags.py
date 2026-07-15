@@ -27,8 +27,18 @@ PORT_2 = "PORT_2"
 PML_OUTER_PEC = "PML_OUTER_PEC"
 PMC_SIDE = "PMC_SIDE"
 
+# --- Surface tag -- new, introduced by the port-aperture decoupling
+# (Section 4.4): the end-plane region outside a (optionally) sub-full-size
+# PORT_p aperture. Folded into Module 1's combined PEC set (`PEC_GROUND` U
+# `PEC_LINE` U `PORT_CAP`) rather than kept separate -- it is a PEC wall
+# idealization, and this is what makes the aperture's own side/top walls
+# PEC automatically via Module 1's existing "2D edge is PEC iff it borders
+# a PEC-tagged 3D face" rule, with no new Module 4 code. Empty (no physical
+# group emitted) whenever the aperture equals the full cross-section. ---
+PORT_CAP = "PORT_CAP"
+
 VOLUME_TAGS: tuple[str, ...] = (SUBSTRATE, LC, AIR, PML_TOP)
-SURFACE_TAGS: tuple[str, ...] = (PEC_GROUND, PEC_LINE, PORT_1, PORT_2, PML_OUTER_PEC, PMC_SIDE)
+SURFACE_TAGS: tuple[str, ...] = (PEC_GROUND, PEC_LINE, PORT_1, PORT_2, PML_OUTER_PEC, PMC_SIDE, PORT_CAP)
 
 
 @dataclass(frozen=True)

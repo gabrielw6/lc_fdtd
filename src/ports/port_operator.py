@@ -3,10 +3,16 @@ de-embedding (Section 6) (docs/module4_ports_equations.md).
 
 Section 5.1 carries its own honesty flag (the overall sign came out
 opposite an earlier top-level sketch); the structural check this doc
-offers independent of that sign question is B_p's symmetry, run here as a
-diagnostic (not a hard failure) -- exactly because the doc itself says the
-real acceptance criterion is the end-to-end reciprocity/passivity gate
-(Modules 6+7), not this in-isolation check. See `build_B`'s docstring.
+offers independent of that sign question is B_p's symmetry. `build_B`
+(post-review) now assembles a form that is symmetric *by construction*,
+substituting the modal-admittance identity `h_m=Y_m*(x_hat x e_m)`
+directly into the formula rather than relying on it holding to
+floating-point/discretization precision -- see `build_B`'s own docstring
+for the derivation. The real acceptance criterion remains the end-to-end
+reciprocity/passivity gate (Modules 6+7), not this in-isolation structural
+property, but a symmetric-by-construction `B` removes an entire class of
+spurious `SystemSymmetryError`s that had nothing to do with an actual
+tensor-index bug.
 """
 from __future__ import annotations
 
@@ -30,18 +36,29 @@ def build_B(port_modes: dict[str, list[PortMode]], mesh: MeshInterface, omega: f
     """Section 5.1's boxed `B_p`, summed over every port's retained modes
     and assembled into one global-DOF-sized (Section 9), low-rank/local
     sparse matrix -- each port only touches the rows/cols of its own edges.
-    Reuses each `PortMode`'s cached `overlap_e`/`overlap_h` (Section 5.2)
-    directly; no fresh quadrature here.
 
-    Does **not** raise on an asymmetric result. Section 5.1's "B_p is
-    manifestly symmetric" claim is a structural check the doc offers
-    independent of the overall-sign question, but Section 3.6 and Section
-    5.1 both carry explicit honesty flags about this exact arrangement --
-    an asymmetric `B` here is exactly the kind of signal the doc says to
-    chase down against a literature reference (Jin Ch. 4; Lee, Sun &
-    Cendes 1991), not a caller mistake to hard-fail on. Callers that want
-    the hard gate should check `max(abs(B - B.T))` themselves; the real
-    acceptance test is end-to-end reciprocity once Modules 6/7 exist.
+    **Symmetric-by-construction form (added post-review).** Section 5.1's
+    boxed formula is `B_ij = -j*omega*mu0 * sum_m Y_m * overlap_e[i] *
+    overlap_h[j]` -- algebraically symmetric only via the modal-admittance
+    identity `h_m = Y_m*(x_hat x e_m)`, which gives `overlap_h[j] =
+    Y_m*overlap_e[j]` *analytically*. That identity holds to within the
+    discrete field reconstruction's own error, not exactly -- for a
+    marginal (near-degenerate, coarsely-resolved) mode the gap was
+    confirmed to make `B` wildly asymmetric (up to ~130% relative),
+    tripping `solve.system.factor`'s symmetry check on an otherwise-fine
+    system. Substituting the identity directly into the formula --
+    `overlap_h -> Y_m*overlap_e` -- gives the equal-when-the-identity-holds
+    form actually assembled below:
+
+        B_ij = -j*omega*mu0 * sum_m (Y_m**2) * overlap_e[i] * overlap_e[j]
+
+    Every term in that sum is `(scalar) * outer(v, v)`, which is symmetric
+    for *any* `v` and *any* mode quality -- not just analytically, in the
+    literal matrix this function builds, regardless of how marginal the
+    contributing mode is. `overlap_h` is still computed and stored on
+    `PortMode` (Section 5.2's cache) for any other consumer (e.g. Module 7
+    extraction) that needs the un-substituted quantity; this function no
+    longer reads it.
     """
     n = mesh.n_edges
     rows: list[int] = []
@@ -56,7 +73,7 @@ def build_B(port_modes: dict[str, list[PortMode]], mesh: MeshInterface, omega: f
 
         block = np.zeros((cs.n_edges, cs.n_edges), dtype=complex)
         for mode in modes:
-            block += -1j * omega * _c.mu_0 * mode.Y * np.outer(mode.overlap_e, mode.overlap_h)
+            block += -1j * omega * _c.mu_0 * (mode.Y**2) * np.outer(mode.overlap_e, mode.overlap_e)
 
         ge = global_edges.tolist()
         for i, gi in enumerate(ge):

@@ -4,6 +4,7 @@ Sections 2-3, 6-7).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,7 +15,7 @@ from fem import assemble
 from material import MaterialAssembly
 from mesh_interface import MeshInterface
 from pml import PMLMaterial
-from ports import PortMode, PortModeSolver, build_B, build_g, mode_similarity
+from ports import PortMode, PortModeSolver, build_B, build_g, check_port_sizing_for_cross_section, mode_similarity
 
 from .system import Factorization, build_restriction, factor, reduce_system, recover_solution, solve_with_factorization
 
@@ -138,7 +139,12 @@ def run_sweep(
     pml_params: dict | None = None,
 ) -> list["SweepResult"]:
     """Section 7's full per-frequency procedure, looped over `frequencies`.
-    `pml_params`, if the mesh has a `PML_TOP` region, must supply
+    `n_modes` is the *required* minimum mode count per port (single-mode-
+    tolerant mode counting, post-review) -- a genuinely single-mode port
+    (`n_modes=1`) is expected to succeed, not merely a degenerate case;
+    the `n_modes+2` oversupply this function requests from
+    `PortModeSolver.solve` is only *desired*, for mode tracking to choose
+    among. `pml_params`, if the mesh has a `PML_TOP` region, must supply
     `background` (a `MaterialModel`), `z_air_top`, `thickness`, and
     optionally `R0`, `n`, `kappa_max` (Module 5's `PMLMaterial` signature,
     minus `omega` which this function supplies fresh per frequency)."""
@@ -154,6 +160,15 @@ def run_sweep(
     # Ports live in isotropic feed sections only (Module 4 Section 1) --
     # never in PML_TOP -- so the interior materials alone suffice.
     port_solver = PortModeSolver(mesh, interior_materials)
+
+    # Port-aperture sizing advisory (ports.sizing), once per port at the
+    # sweep's own f_max -- the other emission point is per-frequency,
+    # inside `PortModeSolver.solve` itself.
+    f_max = max(frequencies) / (2.0 * np.pi)
+    for tag in port_tags:
+        cs = port_solver.cross_section(tag)
+        for msg in check_port_sizing_for_cross_section(cs, interior_materials, f_max):
+            warnings.warn(f"port {tag!r} sweep f_max={f_max:.4g} Hz: {msg}", stacklevel=2)
 
     oversupply = n_modes + 2  # Section 6.2 step 1
     tracking_state: TrackingState | None = None
@@ -173,8 +188,14 @@ def run_sweep(
             M_pml = sp.csr_matrix(M_int.shape, dtype=complex)
 
         # Section 6/7 step 2: solve, filter (internal to PortModeSolver),
-        # and track each port's modes.
-        candidates = {tag: port_solver.solve(tag, omega, n_modes=oversupply) for tag in port_tags}
+        # and track each port's modes. `n_modes` is the true required
+        # minimum (a genuinely single-mode aperture must not fail here);
+        # `oversupply` is only the *desired* extra pool for mode tracking
+        # to pick from -- `PortModeSolver.solve`'s n_modes/n_desired split
+        # (single-mode-tolerant mode counting) is what makes this safe.
+        candidates = {
+            tag: port_solver.solve(tag, omega, n_modes=n_modes, n_desired=oversupply) for tag in port_tags
+        }
         if step == 0:
             check_starting_frequency_precondition(candidates, n_modes)
         tracked, tracking_state = track_modes(candidates, tracking_state, is_first_step=(step == 0), n_modes=n_modes)
@@ -183,9 +204,17 @@ def run_sweep(
         B = build_B(tracked, mesh, omega)
 
         # Section 1 + Section 7 step 4: full system, reduced and factored once.
-        A = (K_int + K_pml) - (k0**2) * (M_int + M_pml) + B
-        A_ff, _ = reduce_system(A, np.zeros(mesh.n_edges, dtype=complex), R)
-        fact: Factorization = factor(A_ff)
+        KM = (K_int + K_pml) - (k0**2) * (M_int + M_pml)
+        A = KM + B
+        zeros = np.zeros(mesh.n_edges, dtype=complex)
+        A_ff, _ = reduce_system(A, zeros, R)
+        # Reduce the two contributing terms separately too, purely so
+        # `factor` can name which one broke symmetry if the check fails --
+        # cheap (matrix slicing, no refactorization) relative to the
+        # eigensolves/assembly already done this step.
+        KM_ff, _ = reduce_system(KM, zeros, R)
+        B_ff, _ = reduce_system(B, zeros, R)
+        fact: Factorization = factor(A_ff, components={"K-k0^2*M (interior+PML)": KM_ff, "B (port operator)": B_ff})
 
         # Section 7 step 5: one excitation per port's dominant tracked mode.
         for port_tag in port_tags:

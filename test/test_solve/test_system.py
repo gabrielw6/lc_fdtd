@@ -83,14 +83,41 @@ def test_reduce_system_produces_symmetric_reduced_matrix():
 
 
 def test_factor_rejects_non_symmetric_matrix():
-    # Relative asymmetry >> _SYMMETRY_TOL (0.3, deliberately loose --
-    # see factor()'s docstring for why): off-diagonal entries 10 and 0
-    # against a scale of 10 give a residual/scale ratio of 1.0, an order
-    # of magnitude past the tolerance, representative of what a genuinely
-    # transposed tensor index looks like (not a borderline percentage).
+    # Relative asymmetry >> _SYMMETRY_TOL (1e-6, tightened post-review now
+    # that ports.port_operator.build_B assembles B_p symmetric by
+    # construction -- see factor()'s docstring): off-diagonal entries 10
+    # and 0 against a scale of 10 give a residual/scale ratio of 1.0, many
+    # orders of magnitude past the tolerance, representative of what a
+    # genuinely transposed tensor index looks like (not a borderline
+    # roundoff-level discrepancy).
     non_symmetric = sp.csr_matrix(np.array([[1.0, 10.0], [0.0, 1.0]], dtype=complex))
     with pytest.raises(SystemSymmetryError):
         factor(non_symmetric)
+
+
+def test_factor_rejects_matrix_with_small_but_above_tolerance_asymmetry():
+    """The whole point of tightening _SYMMETRY_TOL back down: a residual
+    that would have passed the old 0.3 tolerance (loose enough to hide
+    B_p's old formula's ~130% worst case) must now be caught."""
+    almost_symmetric = sp.csr_matrix(np.array([[1.0, 1.0 + 1e-4], [1.0, 1.0]], dtype=complex))
+    with pytest.raises(SystemSymmetryError):
+        factor(almost_symmetric)
+
+
+def test_factor_components_diagnostic_names_the_broken_term():
+    """`components` (post-review addition) lets a symmetry failure's
+    message identify which contributing term actually broke symmetry."""
+    broken = sp.csr_matrix(np.array([[1.0, 10.0], [0.0, 1.0]], dtype=complex))
+    fine = sp.csr_matrix(np.eye(2, dtype=complex))
+    combined = broken + fine
+    with pytest.raises(SystemSymmetryError, match="K-k0\\^2\\*M"):
+        factor(combined, components={"K-k0^2*M (interior+PML)": broken, "B (port operator)": fine})
+
+
+def test_factor_components_is_optional_and_does_not_change_pass_fail():
+    R = build_restriction(_PEC_DOFS, n_edges=4)
+    A_ff, _ = reduce_system(sp.csr_matrix(_A), _B, R)
+    factor(A_ff, components={"whole": A_ff})  # must not raise, same as without components
 
 
 def test_factor_rejects_singular_matrix():

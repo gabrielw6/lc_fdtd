@@ -118,29 +118,48 @@ def plot_geometry(
     output: "Path | None" = None,
     elev: float = 25.0,
     azim: float = -60.0,
+    ax=None,
+    alpha_scale: float = 1.0,
 ) -> "Figure":
     """3D view of the tagged geometry: PORT_1/PORT_2 (translucent), the
     PEC_LINE trace (opaque), and -- unless `show_substrate=False` -- the
     substrate slab's own envelope (translucent gray, including the LC
     cutout notch). PMC_SIDE and the PML shell are never drawn (see
-    `_GEOMETRY_TAGS`)."""
+    `_GEOMETRY_TAGS`).
+
+    `ax`/`alpha_scale` (added for `viz.field_slice`'s reuse -- CLI's own
+    `--show-geometry` never passes either, so its behavior is bit-for-bit
+    unchanged): pass an existing `Axes3D` to draw the structure into it
+    instead of creating a new figure -- the caller then owns show/save/
+    close, so this function returns immediately after drawing rather than
+    doing any of those. `alpha_scale` uniformly scales every tag's alpha
+    (e.g. `0.4` for a faint structure a field slice should read through);
+    `1.0` (default) reproduces the plain `--show-geometry` alphas exactly."""
     from matplotlib.patches import Patch
 
     plt, Poly3DCollection, _ = _require_matplotlib()
-    fig = plt.figure(figsize=(9.0, 6.0))
-    ax = fig.add_subplot(111, projection="3d")
+    owns_figure = ax is None
+    if owns_figure:
+        fig = plt.figure(figsize=(9.0, 6.0))
+        ax = fig.add_subplot(111, projection="3d")
+    else:
+        fig = ax.figure
 
     if show_substrate:
         tris = _substrate_envelope_triangles(mesh)
         if len(tris):
-            ax.add_collection3d(Poly3DCollection(tris, facecolor="lightgray", edgecolor="none", alpha=0.25))
+            ax.add_collection3d(
+                Poly3DCollection(tris, facecolor="lightgray", edgecolor="none", alpha=0.25 * alpha_scale)
+            )
 
     handles = []
     for tag, color, alpha in _GEOMETRY_TAGS:
         tris = _triangles_for_tag(mesh, tag)
         if len(tris) == 0:
             continue
-        ax.add_collection3d(Poly3DCollection(tris, facecolor=color, edgecolor="k", linewidths=0.1, alpha=alpha))
+        ax.add_collection3d(
+            Poly3DCollection(tris, facecolor=color, edgecolor="k", linewidths=0.1, alpha=alpha * alpha_scale)
+        )
         handles.append(Patch(facecolor=color, alpha=alpha, label=tag))
 
     _set_equal_3d_bounds(ax, mesh.vertices)
@@ -151,6 +170,9 @@ def plot_geometry(
     ax.view_init(elev=elev, azim=azim)
     if handles:
         ax.legend(handles=handles, loc="upper left", fontsize=8)
+
+    if not owns_figure:
+        return fig
 
     if output is not None:
         fig.savefig(output, dpi=150)

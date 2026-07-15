@@ -238,10 +238,18 @@ region.
 Match each extracted boundary face against the `surface_tags` groups by its sorted vertex
 triple, producing the tagged sets the solver consumes:
 
-- `PEC` = `PEC_LINE` ∪ `PEC_GROUND` — where Module 6 imposes the essential BC
+- `PEC` = `PEC_LINE` ∪ `PEC_GROUND` ∪ `PORT_CAP` — where Module 6 imposes the essential BC
   $\hat{\mathbf n}\times\mathbf E = 0$ (these edge DOFs are constrained out, not assembled).
+  `PORT_CAP` (Module 0 §4.3/1.4 addendum, port-aperture decoupling): the end-plane region
+  outside a sub-full-size `PORT_p` aperture, empty whenever the aperture equals the full
+  cross-section. Folding it into the same `PEC` aggregate as `PEC_GROUND`/`PEC_LINE` — rather
+  than giving it its own bucket — is what makes a restricted aperture's own side/top walls PEC
+  in Module 4's 2D port eigenproblem automatically, via the same "2D edge is PEC iff it borders
+  a PEC-tagged 3D face" rule Module 4 §2.3 already relies on for the internal trace segment; no
+  new Module 4 contract addition was needed for this.
 - `PORT_p` — one set per port; consumed by Module 4 (port face for the 2D mode solve and the
-  surface term).
+  surface term). Restricted to the port aperture when Module 0 was given one (§1.4 there) —
+  equals the full substrate+air cross-section by default.
 - `PML_OUTER` — PEC-backed outer wall; treated as `PEC` for BC purposes.
 
 **Coverage check**: every boundary face resolves to exactly one tag; an untagged boundary face

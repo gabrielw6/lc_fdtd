@@ -33,6 +33,7 @@ from .tags import (
     PMC_SIDE,
     PORT_1,
     PORT_2,
+    PORT_CAP,
     SUBSTRATE,
     SURFACE_TAGS,
     MaterialSpecStub,
@@ -51,6 +52,30 @@ class GeometryConsistencyError(RuntimeError):
     `GeometryParameterError`)."""
 
 
+def _build_rect_x_plane(x: float, y_range: tuple[float, float], z_range: tuple[float, float]) -> DimTag:
+    """A planar OCC face at fixed `x`, spanning `y_range x z_range` --
+    built directly from points/lines/a curve loop rather than
+    `occ.addRectangle` (which only builds in the z=const plane, so a
+    vertical face would need a rotation whose direction is easy to get
+    backwards). Requires an active Gmsh model (caller's responsibility)."""
+    import gmsh
+
+    occ = gmsh.model.occ
+    y0, y1 = y_range
+    z0, z1 = z_range
+    pts = [
+        occ.addPoint(x, y0, z0),
+        occ.addPoint(x, y1, z0),
+        occ.addPoint(x, y1, z1),
+        occ.addPoint(x, y0, z1),
+    ]
+    lines = [occ.addLine(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+    loop = occ.addCurveLoop(lines)
+    surf = occ.addPlaneSurface([loop])
+    occ.synchronize()
+    return (2, surf)
+
+
 class GeometryBuilder:
     """Builds the one fixed topology docs/module0_geometry_builder_equations.md
     describes: a microstrip line with a centered rectangular LC cutout in
@@ -67,11 +92,13 @@ class GeometryBuilder:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("geometry_builder")
         try:
-            volume_entities, rect_descendants = self._build_and_fragment(params, geom)
+            volume_entities, rect_descendants, port_aperture_descendants = self._build_and_fragment(params, geom)
             volume_groups = self._tag_volumes(volume_entities)
             self._check_volumes(volume_groups, params, geom)
 
-            surface_groups = self._tag_surfaces(params, geom, volume_entities, rect_descendants)
+            surface_groups = self._tag_surfaces(
+                params, geom, volume_entities, rect_descendants, port_aperture_descendants
+            )
             self._check_surface_coverage(volume_entities, surface_groups)
 
             h_char = mesh_sizing.characteristic_length(
@@ -92,7 +119,7 @@ class GeometryBuilder:
 
     def _build_and_fragment(
         self, params: GeometryParams, geom: DerivedGeometry
-    ) -> tuple[list[list[DimTag]], list[DimTag]]:
+    ) -> tuple[list[list[DimTag]], list[DimTag], dict[str, list[DimTag] | None]]:
         h_sub = params.h_sub
 
         # Section 2's five-brick decomposition: pre-cavity, left wing, LC,
@@ -121,18 +148,44 @@ class GeometryBuilder:
         rect_tag = occ.addRectangle(0.0, geom.y0_trace, h_sub, params.L, params.w)
         occ.synchronize()
 
+        # Port-aperture decoupling: when the aperture is strictly smaller
+        # than the domain's own end-plane cross-section, embed it as a
+        # conformal partitioning rectangle on BOTH end planes (x=0, x=L),
+        # exactly the trace-footprint pattern above -- a rectangle on a
+        # vertical (x=const) plane, though, which `occ.addRectangle` can't
+        # build directly (it only builds in the local-XY, i.e. z=const,
+        # plane), so it's built from raw points/lines/a curve loop instead:
+        # exact by construction, no rotation-direction ambiguity to get
+        # wrong. When the aperture equals the full cross-section (the
+        # `W_port is None`-defaulted case, or a user-supplied value that
+        # happens to match), skip this entirely -- zero new fragment
+        # entities, bit-for-bit the pre-existing full-port behavior.
+        port_apertures_restricted = not (
+            params.W_port == params.W_sub and params.H_port == geom.z_air_top
+        )
+        tools: list[DimTag] = [(2, rect_tag)]
+        if port_apertures_restricted:
+            port1_rect = _build_rect_x_plane(0.0, (geom.y0_port, geom.y1_port), (0.0, params.H_port))
+            port2_rect = _build_rect_x_plane(params.L, (geom.y0_port, geom.y1_port), (0.0, params.H_port))
+            tools += [port1_rect, port2_rect]
+
         # Section 3, step 5 (composite) + step 6's propagation note: one
-        # fragment call across every brick and the embedded rectangle --
+        # fragment call across every brick and every embedded rectangle --
         # already-conformal interfaces (the five bricks against each other)
-        # are a no-op; the Air/PML interfaces become conformal here, and
-        # the rectangle splits the substrate/air interface into the trace
-        # patch plus its surrounding remainder.
+        # are a no-op; the Air/PML interfaces become conformal here, the
+        # trace rectangle splits the substrate/air interface into the trace
+        # patch plus its surrounding remainder, and (when restricted) the
+        # two port rectangles split each end plane into aperture + cap.
         objects = [pre, left_wing, lc, right_wing, post, air, pml]
-        _out, out_map = meshing_tagging.fragment(objects, [(2, rect_tag)])
+        _out, out_map = meshing_tagging.fragment(objects, tools)
 
         volume_entities = out_map[:7]
         rect_descendants = out_map[7]
-        return volume_entities, rect_descendants
+        port_aperture_descendants: dict[str, list[DimTag] | None] = {
+            PORT_1: out_map[8] if port_apertures_restricted else None,
+            PORT_2: out_map[9] if port_apertures_restricted else None,
+        }
+        return volume_entities, rect_descendants, port_aperture_descendants
 
     def _tag_volumes(self, volume_entities: list[list[DimTag]]) -> dict[str, list[DimTag]]:
         pre, left_wing, lc, right_wing, post, air, pml = volume_entities
@@ -152,6 +205,7 @@ class GeometryBuilder:
         geom: DerivedGeometry,
         volume_entities: list[list[DimTag]],
         rect_descendants: list[DimTag],
+        port_aperture_descendants: dict[str, list[DimTag] | None],
     ) -> dict[str, list[DimTag]]:
         import gmsh
 
@@ -163,15 +217,31 @@ class GeometryBuilder:
         # unit-handling discipline applied here too: never a bare literal).
         eps = 1e-9 * max(geom.z_pml_top, params.L, params.W_sub)
 
+        # Port-aperture decoupling: when restricted, `port_aperture_descendants[PORT_p]`
+        # is the exact embedded-rectangle descendant set (Section 4.4) --
+        # not a centroid/bbox threshold query -- so splitting the end
+        # plane's face(s) into aperture (PORT_p) vs cap (PORT_CAP) is exact
+        # set membership, no tolerance risk at the aperture boundary. `None`
+        # means "not restricted": every face in the end-plane region is the
+        # aperture, exactly today's pre-existing behavior.
+        port1_aperture = set(port_aperture_descendants[PORT_1]) if port_aperture_descendants[PORT_1] is not None else None
+        port2_aperture = set(port_aperture_descendants[PORT_2]) if port_aperture_descendants[PORT_2] is not None else None
+
         buckets: dict[str, list[DimTag]] = {name: [] for name in SURFACE_TAGS}
         for dim, tag in exterior:
             cx, cy, cz = occ.getCenterOfMass(dim, tag)
             if abs(cz - geom.z_gnd) < eps:
                 buckets[PEC_GROUND].append((dim, tag))
             elif cz <= geom.z_air_top + eps and abs(cx - 0.0) < eps:
-                buckets[PORT_1].append((dim, tag))
+                if port1_aperture is None or (dim, tag) in port1_aperture:
+                    buckets[PORT_1].append((dim, tag))
+                else:
+                    buckets[PORT_CAP].append((dim, tag))
             elif cz <= geom.z_air_top + eps and abs(cx - params.L) < eps:
-                buckets[PORT_2].append((dim, tag))
+                if port2_aperture is None or (dim, tag) in port2_aperture:
+                    buckets[PORT_2].append((dim, tag))
+                else:
+                    buckets[PORT_CAP].append((dim, tag))
             elif cz <= geom.z_air_top + eps and (abs(cy - 0.0) < eps or abs(cy - params.W_sub) < eps):
                 buckets[PMC_SIDE].append((dim, tag))
             else:
@@ -222,9 +292,12 @@ class GeometryBuilder:
 
         # PEC_LINE is deliberately excluded: it is an internal partitioning
         # face (Section 4.3's list is the exterior-wall vocabulary), not a
-        # member of `exterior`.
+        # member of `exterior`. PORT_CAP is included -- when the port
+        # aperture is restricted, it is genuinely part of the exterior wall
+        # (Section 4.4); when not restricted, `surface_groups[PORT_CAP]` is
+        # simply empty and contributes nothing.
         tagged: set[DimTag] = set()
-        for name in (PEC_GROUND, PORT_1, PORT_2, PMC_SIDE, PML_OUTER_PEC):
+        for name in (PEC_GROUND, PORT_1, PORT_2, PMC_SIDE, PML_OUTER_PEC, PORT_CAP):
             tagged.update(surface_groups[name])
 
         missing = exterior - tagged

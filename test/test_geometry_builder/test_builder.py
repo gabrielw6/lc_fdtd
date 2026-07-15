@@ -20,6 +20,7 @@ from geometry_builder.tags import (
     PMC_SIDE,
     PORT_1,
     PORT_2,
+    PORT_CAP,
     SUBSTRATE,
     SURFACE_TAGS,
     VOLUME_TAGS,
@@ -59,7 +60,18 @@ def test_every_volume_tag_present_and_nonempty(built):
 def test_every_surface_tag_present_and_nonempty(built):
     mesh_handle, _ = built
     for name in SURFACE_TAGS:
+        if name == PORT_CAP:
+            # Section 1.4: PORT_CAP is legitimately empty whenever the port
+            # aperture equals the full cross-section, which `_PARAMS` (no
+            # W_port/H_port given) does by default -- see test_builder_port_aperture.py
+            # for the restricted-aperture case where it's populated.
+            continue
         assert mesh_handle.surface_tags[name].shape[0] > 0, f"{name} has no triangles"
+
+
+def test_port_cap_is_empty_when_aperture_not_restricted(built):
+    mesh_handle, _ = built
+    assert mesh_handle.surface_tags[PORT_CAP].shape[0] == 0
 
 
 def test_lc_volume_matches_closed_form(built):
