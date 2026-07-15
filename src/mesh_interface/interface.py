@@ -237,8 +237,24 @@ def _tet_geometry(vertices: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, n
 
 
 def _characteristic_length(vertices: np.ndarray) -> float:
+    """The model's own spatial extent, used by `_check_tet_geometry`'s
+    degeneracy floor as "a negligible fraction (1e-12) of the model's
+    characteristic volume." Previously clamped to `max(extent, 1.0)`,
+    silently assuming the model spans at least 1 unit -- true for no
+    geometry in this repo (SI metres, ~0.02 m across), which collapsed the
+    volume floor to an absolute `1e-12 m^3` instead of the intended
+    `1e-12 * (0.02)^3 ~= 8e-18 m^3` (post-review fix: confirmed to
+    false-positive-reject well-shaped tets, ~1e-13 m^3, at
+    `--mesh-density 16` on the isotropic-microstrip geometry -- five orders
+    of magnitude above the correctly-scaled floor, and already confirmed
+    well-shaped by the mesher's own scale-invariant `minSICN` quality
+    check, `src/meshing/mesh_generation.py`). Only a genuinely
+    zero-extent point set (not a sub-metre one) is rejected now."""
     extents = vertices.max(axis=0) - vertices.min(axis=0)
-    return float(max(extents.max(), 1.0))
+    ext = float(extents.max())
+    if ext <= 0.0:
+        raise MeshGeometryError("mesh has zero spatial extent")
+    return ext
 
 
 def _check_tet_geometry(

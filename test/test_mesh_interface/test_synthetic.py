@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from mesh_interface import MeshGeometryError, MeshInterface
-from mesh_interface.interface import LOCAL_EDGES, LOCAL_FACES
+from mesh_interface.interface import LOCAL_EDGES, LOCAL_FACES, _characteristic_length
 
 from ._two_tet_patch import BOUNDARY_FACES, FULL_SURFACE_TAGS, TETS, VERTICES, VOLUME_A, VOLUME_B
 
@@ -32,6 +32,33 @@ def test_total_volume_matches_hand_computation():
     mi = _build()
     total = sum(mi.volume(t) for t in range(mi.n_tets))
     assert total == pytest.approx(VOLUME_A + VOLUME_B, rel=1e-12)
+
+
+# --- Section 2.5: degeneracy-guard floor scaling (post-review fix) ----------
+
+
+def test_characteristic_length_returns_true_extent_for_a_sub_metre_point_set():
+    """The clamp this used to apply (`max(extent, 1.0)`) silently turned the
+    intended *relative* `1e-12 * extent**3` degeneracy floor into an
+    *absolute* `1e-12 m^3` for any sub-metre geometry -- every geometry this
+    repo actually builds (SI metres, ~0.02 m across). A 0.02 m point set
+    must report its own true extent, not 1.0."""
+    vertices = np.array([[0.0, 0.0, 0.0], [0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.0, 0.0, 0.02]])
+    assert _characteristic_length(vertices) == pytest.approx(0.02)
+
+
+def test_characteristic_length_still_clamps_only_zero_extent():
+    vertices = np.zeros((4, 3))
+    with pytest.raises(MeshGeometryError, match="zero spatial extent"):
+        _characteristic_length(vertices)
+
+
+def test_characteristic_length_unaffected_for_a_metre_scale_point_set():
+    """A model that genuinely spans >=1 unit must report its own extent
+    exactly as before -- this fix only changes behavior for sub-metre
+    geometries, per its own docstring."""
+    vertices = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    assert _characteristic_length(vertices) == pytest.approx(3.0)
 
 
 # --- Section 2.5 / 4: per-tet identities, re-checked via the public API -----

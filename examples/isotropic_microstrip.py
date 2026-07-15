@@ -153,7 +153,7 @@ if __name__ == "__main__":
                 # Coarse and fast, for a quick end-to-end run; still a
                 # trivial (non-absorbing) PML -- see this file's own module
                 # docstring's PML caveat for why a real one isn't used here.
-                "--mesh-density", "15",
+                "--mesh-density", "30",
                 "--pml-r0", "1.0",
                 "--pml-kappa-max", "1.0",
                 "--f-start", "8e9",

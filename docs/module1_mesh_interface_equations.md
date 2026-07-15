@@ -121,7 +121,13 @@ makes one of the §2.5 checks fall out for free.
   just the gradients.
 - **Degeneracy guard**: $|\det P| = 6|V| > \varepsilon_{\text{geo}}$ (a floor scaled by the
   mesh's characteristic edge length cubed). A near-zero volume is a sliver/degenerate tet the
-  mesh module should not have produced; raise rather than divide by it in §2.2.
+  mesh module should not have produced; raise rather than divide by it in §2.2. **Implementation
+  bug, since fixed**: `_characteristic_length` clamped the model's own extent to at least 1
+  unit, silently turning the intended *relative* (`1e-12 * extent^3`) floor into an *absolute*
+  `1e-12` for any sub-metre geometry — every geometry this repo builds. This false-positively
+  rejected well-shaped, sub-millimetre tets at finer mesh densities (confirmed well-shaped by
+  the mesher's own scale-invariant `minSICN` quality gate, which they passed). The clamp is
+  removed; only a genuinely zero-extent point set is rejected now.
 
 ---
 
