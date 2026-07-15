@@ -27,15 +27,32 @@ eps_perp/eps_parallel below are illustrative round numbers for a generic
 nematic LC, not measured values for any specific real material.
 
 A single frequency point, deliberately -- see examples/isotropic_microstrip.py's
-docstring for why a multi-point sweep was tried and reverted on this coarse
-test geometry (a Module 4/6 box-mode/mode-tracking limitation, not a
-plotting issue). `--plot` still renders the single point as a marker.
+docstring for why a multi-point sweep was tried and reverted on an earlier
+version of this test geometry (a Module 4/6 box-mode/mode-tracking
+limitation, not a plotting issue). `--plot` still renders the single point
+as a marker.
 
 `--show-mesh` opens `visualization.geometry_view.plot_mesh`'s 3D wireframe
 of the tetrahedral mesh itself (the exact global edge list the edge-element
 solver assembles on) right after meshing -- see
 examples/isotropic_microstrip.py for the geometry-envelope view instead
 (`--show-geometry`).
+
+Geometry/port-aperture dimensions (w, h_sub, mesh-density, f-start,
+w-port, h-port) match examples/isotropic_microstrip.py exactly -- see that
+file's docstring for the box-mode/fringing-margin arithmetic behind those
+numbers. The LC cavity sits well inside the isotropic feed section either
+way (Module 4 Section 1's design invariant: port cross-sections are never
+anisotropic), so the port-aperture sizing behaves identically here.
+
+`--n-modes 2` here, unlike the isotropic example's `--n-modes 1`: this
+case is the one where a second (cross-polarization) mode is physically
+expected -- the off-axis director direction below couples power into it
+(see the mode-conversion note below) -- so 2 is the *required* minimum,
+not merely a desired oversupply (`ports.mode_solver.PortModeSolver.solve`'s
+`n_modes`/`n_desired` split, port-aperture-decoupling review Part B: this
+port must genuinely have 2 valid modes, or the sweep should fail loudly
+rather than silently proceed with 1).
 """
 import sys
 from pathlib import Path
@@ -48,23 +65,25 @@ if __name__ == "__main__":
     raise SystemExit(
         main(
             [
-                "--w", "0.002",
+                "--w", "0.00334",
                 "--L", "0.020",
                 "--L-lc", "0.008",
                 "--W-lc", "0.004",
-                "--h-sub", "0.002",
+                "--h-sub", "0.0015",
                 "--W-sub", "0.010",
                 "--eps-r-substrate", "3.0",
-                "--mesh-density", "6",
+                "--mesh-density", "10",
                 "--pml-r0", "1.0",
                 "--pml-kappa-max", "1.0",
-                "--f-start", "25e9",
+                "--f-start", "10e9",
                 "--f-points", "1",
                 "--n-modes", "2",
                 "--lc", "uniform",
                 "--lc-direction", "0,1,0.3",
                 "--eps-perp", "2.5",
                 "--eps-parallel", "3.0",
+                "--w-port", "0.008",
+                "--h-port", "0.006",
                 "--plot",
                 "--show-mesh",
             ]
